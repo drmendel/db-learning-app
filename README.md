@@ -1,18 +1,57 @@
-# Adatbázis gyakorló – learn the course by doing it
+# db-learning-app – learn databases by doing
 
-A local, offline practice app for **Adatbázis- és Big Data technológiák** (labs 1–10 + the sample ZH).
-Every topic has a short lesson and hands-on tasks that are **graded automatically on your machine**, with no AI or internet needed.
+A self-contained practice app for **Adatbázis- és Big Data technológiák** (labs 1–10 + the sample ZH).
+Every topic has a short lesson and hands-on tasks that are **graded automatically**, with no AI and no external services.
+Available in **English** and **Hungarian** (switch with the EN/HU selector in the top bar).
 
-## Start
+## Run it with Docker (any machine)
 
 ```bash
-cd ~/uni/adatb/db-learning-app
+git clone git@github.com:drmendel/db-learning-app.git
+cd db-learning-app
+docker compose up -d --build
+```
+
+Open **http://localhost:8765**. Use another port with `PORT=9000 docker compose up -d`.
+Stop it with `docker compose down`.
+
+The whole stack is **one container**: Node.js serves the UI and runs real PostgreSQL (PGlite/WebAssembly) plus the
+Redis and MongoDB emulators in-process. You don't need separate database containers or volumes.
+
+## Run it without Docker
+
+```bash
 ./start.sh            # or:  npm install && npm start
 ```
 
-Then open **http://localhost:8765**. Stop with `Ctrl+C`. Your progress is saved in `progress.json`.
+Requires Node.js ≥ 20. The server listens on `127.0.0.1:8765` by default. Set `HOST=0.0.0.0` to expose it on your network.
 
-Requirements: Node.js ≥ 20 (you have v24). No Docker, no database servers; everything is embedded (~30 MB).
+## Architecture
+
+```text
+browser (public/: vanilla JS, i18n.js, progress in localStorage)
+   │  JSON API: /api/modules  /api/run  /api/check  /api/reveal  /api/schema  /api/health
+   ▼
+server.js (Node, stateless)
+   ├─ engines/pg.js      PostgreSQL via PGlite + HR schema + Oracle→PG translation
+   ├─ engines/redis.js   Redis command emulator
+   ├─ engines/mongo.js   mongosh emulator on top of mingo
+   ├─ engines/grade.js   runs reference vs. your code in fresh sandboxes and compares
+   └─ content/           exercises (m*.js), lessons (lessons/*.md), translations (i18n/hu, lessons/hu)
+```
+
+- **Stateless server**: learning progress, drafts and exam results live in each visitor's **browser** (localStorage).
+  One instance can serve a whole study group.
+- **Isolation**: every check runs in a throw-away sandbox. Playgrounds are per visitor (Redis/MongoDB) or rolled back
+  after each run (SQL).
+
+## Hosting for others: security
+
+Visitors execute code on the server: SQL inside PGlite, and JavaScript for the mongosh emulator, which runs in Node's
+`vm` module. **`vm` is not a security sandbox.** The compose file therefore locks the container down:
+non-root user, read-only filesystem, all capabilities dropped, `no-new-privileges`, and memory and PID limits.
+That limits what a malicious visitor can do, but it doesn't make it safe on the open internet. Host it for people you
+trust, or put it behind authentication (e.g. a reverse proxy with basic auth or a VPN).
 
 ## What's inside (15 modules, 273 items)
 
@@ -36,27 +75,38 @@ Requirements: Node.js ≥ 20 (you have v24). No Docker, no database servers; eve
 
 ## How tasks are graded
 
-- **SQL** runs on real **PostgreSQL 19** (PGlite/WebAssembly) with the course's `HR_pgsql.sql` data. Your query and
-  the reference solution run in identical rolled-back transactions and their results are compared. Column names and
-  column order don't matter, and rows that tie in `ORDER BY` may come in any order. DDL tasks are graded by
-  **behaviour**: the checker inserts good and bad rows to test your constraints.
+- **SQL** runs on real **PostgreSQL 19** (PGlite) with the course's `HR_pgsql.sql` data. Your query and the reference
+  solution run in identical rolled-back transactions and their results are compared. Column names and column order
+  don't matter, and rows that tie in `ORDER BY` may come in any order. DDL tasks are graded by **behaviour**: the
+  checker inserts good and bad rows to test your constraints.
 - **Oracle syntax** from labs 1–4 is accepted where possible: `NVL`, `NVL2`, `MONTHS_BETWEEN`, `ADD_MONTHS`, `DUAL`,
   `SYSDATE`, `VARCHAR2`, `NUMBER`, `seq.NEXTVAL`, `MINUS`, `RENAME`, `ALTER TABLE … ADD (…)/MODIFY`, `DESC table`,
   `EXPLAIN PLAN FOR` + `DBMS_XPLAN.DISPLAY`, `user_tables`, `user_constraints`. A note shows you the PostgreSQL way each time.
 - **Redis** commands run on a built-in emulator of the commands used in lab 7.
 - **MongoDB** code uses mongosh syntax on the *mingo* engine (find, projections, update operators incl. `$[]`/`$`,
   upsert, aggregation incl. `$lookup`/`$unwind`, unique and TTL indexes, simplified `explain`).
-- **Python (lab 10)** and the Oracle plan statements are checked for their key elements, since they can't run offline.
+- **Python (lab 10)** and the Oracle plan statements are checked for their key elements, since they can't run here.
 - **Theory** flashcards are self-assessed against a model answer.
 
-Run the self-test (every reference solution plus 49 typical wrong or alternative answers): `npm test`.
+Run the self-test with `npm test`. It grades every reference solution, 49 typical wrong or alternative answers,
+and the translation coverage of every exercise and lesson.
+
+## Translations
+
+- UI strings: `public/i18n.js` (one object per language).
+- Grader feedback and Oracle-translation notes: `engines/messages.js`.
+- Exercise texts: `content/i18n/<lang>/<moduleId>.js`, which overrides title, prompt, hints, options, explain,
+  answerText and the require/forbid messages. Missing texts fall back to English.
+- Lessons: `content/lessons/<lang>/<file>.md`.
+
+To add a language, add it to `LANGUAGES` in `content/index.js`, to `public/i18n.js` and to `engines/messages.js`, then
+create the overlay files. `npm test` lists everything that is still missing.
 
 ## Limitations
 
 - Oracle itself is not running: Oracle-only features (real CBO plans, hints, histograms, PL/SQL) are covered by
   lessons, quizzes and the PostgreSQL equivalents. For real Oracle practice use the lab VM.
 - The Redis/Mongo emulators cover the course's commands, not 100% of the products (e.g. no `$text` search, no pub/sub delivery).
-- To run lab 10 for real you need Docker and about 1.5 GB of free disk space. The commands are in the Integration lesson.
 
 ## Adding your own exercises
 
@@ -69,4 +119,4 @@ Exercises live in `content/m*.js`, lessons in `content/lessons/*.md`. An SQL exe
   check: 'SELECT … FROM …' }     // optional: compare this state instead of the result
 ```
 
-Run `npm test` afterwards to make sure the reference solution passes.
+Add its Hungarian texts to `content/i18n/hu/<module>.js`, then run `npm test`.
