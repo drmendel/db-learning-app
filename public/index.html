@@ -3,33 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Adatbázis gyakorló</title>
+  <title>DB learning app</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cellipse cx='16' cy='7' rx='11' ry='4' fill='%232f6fed'/%3E%3Cpath d='M5 7v18c0 2.2 4.9 4 11 4s11-1.8 11-4V7c0 2.2-4.9 4-11 4S5 9.2 5 7z' fill='%232f6fed' opacity='.75'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
-    <button class="icon-btn" id="menuBtn" aria-label="Toggle course menu" title="Course menu">☰</button>
+    <button class="icon-btn" id="menuBtn" aria-label="Menu">☰</button>
     <a class="brand" href="#/">
       <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><ellipse cx="16" cy="7" rx="11" ry="4" fill="currentColor"/><path d="M5 7v18c0 2.2 4.9 4 11 4s11-1.8 11-4V7c0 2.2-4.9 4-11 4S5 9.2 5 7z" fill="currentColor" opacity=".55"/></svg>
-      <span>Adatbázis gyakorló</span>
+      <span id="brandName">DB learning app</span>
     </a>
-    <div class="overall" id="overall" title="Overall progress"></div>
+    <div class="overall" id="overall"></div>
     <div id="examTimer" class="exam-timer" hidden></div>
     <nav class="top-actions">
       <a class="btn ghost" href="#/play/pg" id="playLink">Playground</a>
       <button class="btn ghost" id="schemaBtn">Schema</button>
-      <button class="icon-btn" id="themeBtn" title="Toggle dark mode" aria-label="Toggle dark mode">◐</button>
+      <select class="lang-select" id="langSel" aria-label="Language"></select>
+      <button class="icon-btn" id="themeBtn" aria-label="Dark mode">◐</button>
     </nav>
   </header>
   <div class="layout">
     <aside class="sidebar" id="sidebar"></aside>
-    <main class="main" id="main"><p class="muted pad">Loading…</p></main>
+    <main class="main" id="main"><p class="muted pad">…</p></main>
     <aside class="drawer" id="drawer" hidden>
-      <div class="drawer-head"><strong>Schema reference</strong><button class="icon-btn" id="drawerClose" aria-label="Close">✕</button></div>
+      <div class="drawer-head"><strong id="schemaTitle">Schema reference</strong><button class="icon-btn" id="drawerClose" aria-label="Close">✕</button></div>
       <div class="drawer-body" id="drawerBody"></div>
     </aside>
   </div>
+  <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

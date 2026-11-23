@@ -1,35 +1,58 @@
-/* Adatbázis gyakorló – client (vanilla JS, no dependencies) */
+/* db-learning-app – client (vanilla JS, no dependencies).
+   Progress is stored in this browser's localStorage; the server is stateless. */
 'use strict';
 
+// ---------------------------------------------------------------- storage helpers
+function lsGet(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } }
+function lsDel(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } }
+
+function detectLang() {
+  const saved = lsGet('lang');
+  if (saved && window.I18N[saved]) return saved;
+  return (navigator.language || '').toLowerCase().startsWith('hu') ? 'hu' : 'en';
+}
+function clientId() {
+  let id = lsGet('clientId');
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
+    lsSet('clientId', id);
+  }
+  return id;
+}
+
+const EMPTY_PROGRESS = () => ({ exercises: {}, quiz: {}, cards: {}, exams: [] });
 const state = {
+  lang: detectLang(),
   modules: [],
   byId: new Map(),
-  progress: { exercises: {}, quiz: {}, cards: {}, exams: [] },
+  progress: { ...EMPTY_PROGRESS(), ...lsGet('progress', {}) },
   schema: null,
-  exam: loadExam(),
+  exam: lsGet('adatb-exam', null),
 };
-const ENGINE_LABEL = { pg: 'SQL · PostgreSQL', redis: 'Redis', mongo: 'MongoDB', text: 'Code (checked by key elements)', quiz: 'Quiz', card: 'Flashcard' };
-const PLACEHOLDER = {
-  pg: '-- Write your SQL here.  Ctrl+Enter = Run, Ctrl+Shift+Enter = Check',
-  redis: '# One Redis command per line, e.g.  SET kulcs "érték"\n# Ctrl+Enter = Run, Ctrl+Shift+Enter = Check',
-  mongo: '// mongosh code, e.g.  db.Users.find({ city: "Budapest" })\n// Ctrl+Enter = Run, Ctrl+Shift+Enter = Check',
-  text: '# Write your code here, then press Check (Ctrl+Shift+Enter)',
-};
+function saveProgress() { lsSet('progress', state.progress); }
+
+// ---------------------------------------------------------------- i18n
+function t(key, ...args) {
+  const v = window.I18N[state.lang]?.[key] ?? window.I18N.en[key];
+  return typeof v === 'function' ? v(...args) : (v ?? key);
+}
 
 // ---------------------------------------------------------------- utils
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-function h(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+function h(html) { const tpl = document.createElement('template'); tpl.innerHTML = html.trim(); return tpl.content.firstElementChild; }
 async function api(path, body) {
-  const res = await fetch('/api' + path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const url = `/api${path}${path.includes('?') ? '&' : '?'}lang=${state.lang}`;
+  const opts = body === undefined
+    ? { headers: { 'X-Client-Id': clientId() } }
+    : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientId() }, body: JSON.stringify(body) };
+  const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({ error: 'Bad response from the server' }));
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
-function lsGet(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }
-function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } }
-function lsDel(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } }
 
 // ---------------------------------------------------------------- markdown
 function inline(s) {
@@ -84,7 +107,6 @@ function md(src, { tryButtons = false } = {}) {
       continue;
     }
     if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
-      // (nested) lists by indentation
       const stack = [];
       let out = '';
       while (i < lines.length && (/^\s*([-*]|\d+\.)\s+/.test(lines[i]) || (/^\s{2,}\S/.test(lines[i]) && stack.length))) {
@@ -129,6 +151,22 @@ function status(ex) {
 const ICON = { pass: '✓', fail: '✗', seen: '◐', '': '○' };
 function modProgress(m) { const done = m.exercises.filter((e) => status(e) === 'pass').length; return { done, total: m.exercises.length }; }
 
+// ---------------------------------------------------------------- static chrome (header texts)
+function renderChrome() {
+  document.documentElement.lang = state.lang;
+  document.title = t('title');
+  $('#brandName').textContent = t('title');
+  $('#playLink').textContent = t('playground');
+  $('#schemaBtn').textContent = t('schema');
+  $('#schemaTitle').textContent = t('schemaRef');
+  $('#themeBtn').title = t('toggleDark');
+  $('#menuBtn').title = t('menu');
+  $('#drawerClose').title = t('close');
+  const sel = $('#langSel');
+  sel.title = t('language');
+  sel.innerHTML = Object.keys(window.I18N).map((l) => `<option value="${l}" title="${esc(window.I18N[l].langName)}" ${l === state.lang ? 'selected' : ''}>${l.toUpperCase()}</option>`).join('');
+}
+
 // ---------------------------------------------------------------- sidebar & header
 function renderSidebar(activeModule, activeEx) {
   const sb = $('#sidebar');
@@ -144,7 +182,7 @@ function renderSidebar(activeModule, activeEx) {
       </a></div>`);
     if (open) {
       const ul = h('<ul class="ex-list"></ul>');
-      ul.appendChild(h(`<li><a href="#/m/${m.id}" class="${!activeEx ? 'active' : ''}"><span class="st">📖</span>Lesson</a></li>`));
+      ul.appendChild(h(`<li><a href="#/m/${m.id}" class="${!activeEx ? 'active' : ''}"><span class="st">📖</span>${esc(t('lesson'))}</a></li>`));
       for (const ex of m.exercises) {
         const s = status(ex);
         ul.appendChild(h(`<li><a href="#/e/${ex.id}" class="${ex.id === activeEx ? 'active' : ''}"><span class="st ${s}">${ICON[s]}</span>${esc(ex.title)}</a></li>`));
@@ -158,7 +196,9 @@ function renderSidebar(activeModule, activeEx) {
 function renderOverall() {
   let done = 0, total = 0;
   for (const m of state.modules) { const p = modProgress(m); done += p.done; total += p.total; }
-  $('#overall').innerHTML = `<span class="bar"><span style="width:${total ? 100 * done / total : 0}%"></span></span><span class="txt">${done} / ${total} done</span>`;
+  const el = $('#overall');
+  el.title = t('overall');
+  el.innerHTML = `<span class="bar"><span style="width:${total ? 100 * done / total : 0}%"></span></span><span class="txt">${esc(t('done', done, total))}</span>`;
 }
 
 // ---------------------------------------------------------------- routing
@@ -166,14 +206,14 @@ function route() {
   document.body.classList.remove('menu-open');
   const hash = location.hash.replace(/^#\/?/, '');
   const [kind, id] = hash.split('/');
-  const main = $('#main');
-  main.scrollTop = 0;
+  $('#main').scrollTop = 0;
   if (kind === 'm' && state.modules.find((m) => m.id === id)) return renderLesson(state.modules.find((m) => m.id === id));
   if (kind === 'e' && state.byId.has(id)) return renderExercise(state.byId.get(id));
   if (kind === 'play') return renderPlayground(id || 'pg');
   if (kind === 'exam-result') return renderExamResult();
   return renderHome();
 }
+function mount(el) { const main = $('#main'); main.innerHTML = ''; main.appendChild(el); }
 
 // ---------------------------------------------------------------- home
 function nextTodo() {
@@ -186,47 +226,50 @@ function renderHome() {
   const exams = state.progress.exams || [];
   const last = exams[exams.length - 1];
   const page = h(`<div class="page">
-    <h1>Learn databases by doing</h1>
-    <p class="muted">Adatbázis- és Big Data technológiák – every lab topic as hands-on tasks, graded locally against real PostgreSQL and Redis/MongoDB emulators.</p>
+    <h1>${esc(t('homeTitle'))}</h1>
+    <p class="muted">${esc(t('homeSub'))}</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
-      ${next ? `<a class="btn primary" href="#/e/${next.id}">▶ Continue: ${esc(next.title)}</a>` : '<span class="badge pts">Everything done – try the mock ZH!</span>'}
-      <a class="btn" href="#/m/start">How it works</a>
-      <a class="btn" href="#/m/mockzh">Mock ZH${last ? ` (last: ${last.percent}% → ${last.grade})` : ''}</a>
+      ${next ? `<a class="btn primary" href="#/e/${next.id}">${esc(t('continue', next.title))}</a>` : `<span class="badge pts">${esc(t('allDone'))}</span>`}
+      <a class="btn" href="#/m/start">${esc(t('howItWorks'))}</a>
+      <a class="btn" href="#/m/mockzh">${esc(t('mockZh'))}${last ? esc(t('lastExam', last.percent, last.grade)) : ''}</a>
     </div>
     <div class="home-grid"></div>
+    <p style="margin-top:28px"><button class="btn ghost" id="resetProgress" style="font-size:13px">${esc(t('resetProgress'))}</button></p>
   </div>`);
   const grid = $('.home-grid', page);
   state.modules.forEach((m, idx) => {
     const { done, total } = modProgress(m);
     grid.appendChild(h(`<a class="card home-card" href="#/m/${m.id}">
       <div class="t">${idx}. ${esc(m.title)}</div>
-      <div class="s">${esc(m.lab)} · ${total} items</div>
+      <div class="s">${esc(m.lab)} · ${esc(t('items', total))}</div>
       <div class="bar"><span style="width:${total ? 100 * done / total : 0}%"></span></div>
     </a>`));
   });
+  $('#resetProgress', page).addEventListener('click', () => {
+    if (!confirm(t('confirmResetProgress'))) return;
+    state.progress = EMPTY_PROGRESS(); saveProgress();
+    try { Object.keys(localStorage).filter((k) => /^(draft|card|examdraft|examcard):/.test(k)).forEach((k) => localStorage.removeItem(k)); } catch { /* ignore */ }
+    renderHome();
+  });
   mount(page);
 }
-function mount(el) { const main = $('#main'); main.innerHTML = ''; main.appendChild(el); }
 
 // ---------------------------------------------------------------- lesson
 function renderLesson(m) {
   renderSidebar(m.id, null);
   const first = m.exercises[0];
   const page = h(`<div class="page">
-    <div class="crumbs"><a href="#/">Home</a> › <span>${esc(m.lab)}</span></div>
+    <div class="crumbs"><a href="#/">${esc(t('home'))}</a> › <span>${esc(m.lab)}</span></div>
     <div class="md lesson">${md(m.lessonText, { tryButtons: true })}</div>
     <div class="exam-box"></div>
-    <div class="nav-row"><span></span>${first ? `<a class="btn primary" href="#/e/${first.id}">Start the exercises (${m.exercises.length}) →</a>` : ''}</div>
+    <div class="nav-row"><span></span>${first ? `<a class="btn primary" href="#/e/${first.id}">${esc(t('startExercises', m.exercises.length))}</a>` : ''}</div>
   </div>`);
-  bindTry(page);
-  if (m.exam) renderExamBox($('.exam-box', page), m);
-  mount(page);
-}
-function bindTry(el) {
-  $$('[data-try]', el).forEach((b) => b.addEventListener('click', () => {
-    lsSet('play:' + b.dataset.try, b.dataset.code.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+  $$('[data-try]', page).forEach((b) => b.addEventListener('click', () => {
+    lsSet('play:' + b.dataset.try, b.getAttribute('data-code'));
     location.hash = '#/play/' + b.dataset.try;
   }));
+  if (m.exam) renderExamBox($('.exam-box', page), m);
+  mount(page);
 }
 
 // ---------------------------------------------------------------- exercise
@@ -242,18 +285,18 @@ function renderExercise(ex) {
   renderSidebar(m.id, ex.id);
   const exam = inExam(ex);
   const page = h(`<div class="page">
-    <div class="crumbs"><a href="#/">Home</a> › <a href="#/m/${m.id}">${esc(m.title)}</a> › <span>${idx + 1} / ${m.exercises.length}</span></div>
+    <div class="crumbs"><a href="#/">${esc(t('home'))}</a> › <a href="#/m/${m.id}">${esc(m.title)}</a> › <span>${idx + 1} / ${m.exercises.length}</span></div>
     <h1>${esc(ex.title)}</h1>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
-      <span class="badge ${ex.type}">${ENGINE_LABEL[ex.type] || ex.type}</span>
-      ${ex.points ? `<span class="badge pts">${ex.points} points</span>` : ''}
-      ${exam ? '<span class="badge pts">exam mode – no hints</span>' : ''}
+      <span class="badge ${ex.type}">${esc(t('engine')[ex.type] || ex.type)}</span>
+      ${ex.points ? `<span class="badge pts">${esc(t('points', ex.points))}</span>` : ''}
+      ${exam ? `<span class="badge pts">${esc(t('examNoHints'))}</span>` : ''}
     </div>
     <div class="card prompt"><div class="md">${md(ex.prompt)}</div></div>
     <div class="body"></div>
     <div class="nav-row">
-      ${prev ? `<a class="btn" href="#/e/${prev.id}">← ${esc(prev.title)}</a>` : `<a class="btn" href="#/m/${m.id}">← Lesson</a>`}
-      ${next ? `<a class="btn" href="#/e/${next.id}">${esc(next.title)} →</a>` : (exam ? '<button class="btn primary" id="finishBtn2">Finish exam</button>' : '<a class="btn" href="#/">Back to overview</a>')}
+      ${prev ? `<a class="btn" href="#/e/${prev.id}">← ${esc(prev.title)}</a>` : `<a class="btn" href="#/m/${m.id}">← ${esc(t('lesson'))}</a>`}
+      ${next ? `<a class="btn" href="#/e/${next.id}">${esc(next.title)} →</a>` : (exam ? `<button class="btn primary" id="finishBtn2">${esc(t('finishExam'))}</button>` : `<a class="btn" href="#/">${esc(t('backOverview'))}</a>`)}
     </div>
   </div>`);
   const body = $('.body', page);
@@ -274,19 +317,19 @@ function renderCodeExercise(ex, body, exam) {
   const hints = exam ? [] : (ex.hints || []);
   const isText = ex.type === 'text';
   body.innerHTML = `
-    ${hints.length ? `<div class="hints"><button class="btn ghost" data-act="hint">💡 Show hint (1/${hints.length})</button><div class="hint-list"></div></div>` : ''}
-    ${ex.hasSetup && !exam ? '<div><button class="btn ghost" data-act="setup" style="font-size:13px">Show the starting state (setup)</button><div class="setup-box"></div></div>' : ''}
+    ${hints.length ? `<div class="hints"><button class="btn ghost" data-act="hint">${esc(t('showHint', 1, hints.length))}</button><div class="hint-list"></div></div>` : ''}
+    ${ex.hasSetup && !exam ? `<div><button class="btn ghost" data-act="setup" style="font-size:13px">${esc(t('showSetup'))}</button><div class="setup-box"></div></div>` : ''}
     <div class="card editor-wrap">
       <div class="editor-bar">
-        ${!isText ? '<button class="btn" data-act="run" title="Ctrl+Enter">▶ Run</button>' : ''}
-        <button class="btn primary" data-act="check" title="Ctrl+Shift+Enter">✓ Check</button>
-        <span class="lbl">${!isText ? '<kbd>Ctrl</kbd>+<kbd>Enter</kbd> run · ' : ''}<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> check</span>
+        ${!isText ? `<button class="btn" data-act="run" title="Ctrl+Enter">${esc(t('run'))}</button>` : ''}
+        <button class="btn primary" data-act="check" title="Ctrl+Shift+Enter">${esc(t('check'))}</button>
+        <span class="lbl">${!isText ? `<kbd>Ctrl</kbd>+<kbd>Enter</kbd> ${esc(t('kbdRun'))} · ` : ''}<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> ${esc(t('kbdCheck'))}</span>
         <span class="spacer"></span>
-        ${!exam && !isText ? '<button class="btn ghost" data-act="expected">Expected output</button>' : ''}
-        ${!exam ? '<button class="btn ghost" data-act="solution">Solution</button>' : ''}
-        <button class="btn ghost" data-act="clear" title="Restore the starting code">↺</button>
+        ${!exam && !isText ? `<button class="btn ghost" data-act="expected">${esc(t('expectedOutput'))}</button>` : ''}
+        ${!exam ? `<button class="btn ghost" data-act="solution">${esc(t('solution'))}</button>` : ''}
+        <button class="btn ghost" data-act="clear" title="${esc(t('restore'))}">↺</button>
       </div>
-      <textarea class="editor" spellcheck="false" placeholder="${esc(PLACEHOLDER[ex.type] || '')}"></textarea>
+      <textarea class="editor" spellcheck="false" placeholder="${esc(t('placeholder')[ex.type] || '')}"></textarea>
     </div>
     <div class="feedback-box"></div>
     <div class="solution-box"></div>
@@ -302,81 +345,84 @@ function renderCodeExercise(ex, body, exam) {
   const out = $('.output', body);
   const fbBox = $('.feedback-box', body);
   async function doRun() {
-    out.innerHTML = '<p class="muted">Running…</p>';
-    try { renderOutput(out, await api('/run', { exerciseId: ex.id, code: ta.value }), 'Output'); }
+    out.innerHTML = `<p class="muted">${esc(t('running'))}</p>`;
+    try { renderOutput(out, await api('/run', { exerciseId: ex.id, code: ta.value }), t('output')); }
     catch (e) { out.innerHTML = `<div class="feedback fail">${esc(e.message)}</div>`; }
   }
   async function doCheck() {
-    fbBox.innerHTML = '<div class="feedback info">Checking…</div>';
+    fbBox.innerHTML = `<div class="feedback info">${esc(t('checking'))}</div>`;
     try {
-      const r = await api('/check', { exerciseId: ex.id, code: ta.value, exam });
+      const r = await api('/check', { exerciseId: ex.id, code: ta.value });
       fbBox.innerHTML = `<div class="feedback ${r.pass ? 'pass' : 'fail'}"><strong>${r.pass ? '✓ ' : '✗ '}${esc(r.message)}</strong>${r.detail ? `<pre>${esc(r.detail)}</pre>` : ''}</div>`;
-      if (r.output) renderOutput(out, r.output, 'Your output'); else out.innerHTML = '';
+      if (r.output) renderOutput(out, r.output, t('yourOutput')); else out.innerHTML = '';
       if (exam) {
         state.exam.results[ex.id] = { pass: r.pass, code: ta.value };
-        saveExam();
+        lsSet('adatb-exam', state.exam);
       } else {
         const p = state.progress.exercises[ex.id] || { attempts: 0 };
-        p.attempts++; p.code = ta.value; p.last = r.pass ? 'pass' : 'fail'; if (r.pass) p.passed = true;
+        p.attempts++; p.code = ta.value; p.last = r.pass ? 'pass' : 'fail';
+        if (r.pass) { p.passed = true; p.passedAt = p.passedAt || new Date().toISOString(); }
         state.progress.exercises[ex.id] = p;
+        saveProgress();
         if (r.pass) lsDel(draftKey(ex));
       }
       renderSidebar(ex.module, ex.id);
       if (r.pass && !exam) {
         const { next } = siblings(ex);
-        if (next) fbBox.firstElementChild.insertAdjacentHTML('beforeend', ` <a class="btn ok" style="margin-top:8px" href="#/e/${next.id}">Next: ${esc(next.title)} →</a>`);
+        if (next) fbBox.firstElementChild.insertAdjacentHTML('beforeend', ` <a class="btn ok" style="margin-top:8px" href="#/e/${next.id}">${esc(t('next', next.title))}</a>`);
       }
     } catch (e) { fbBox.innerHTML = `<div class="feedback fail">${esc(e.message)}</div>`; }
   }
   body.addEventListener('click', async (e) => {
-    const act = e.target.closest('[data-act]')?.dataset.act;
+    const btn = e.target.closest('[data-act]');
+    const act = btn?.dataset.act;
     if (!act) return;
     if (act === 'run') doRun();
     if (act === 'check') doCheck();
     if (act === 'hint') {
       if (hintN < hints.length) $('.hint-list', body).insertAdjacentHTML('beforeend', `<div class="hint"><div class="md">${md(hints[hintN])}</div></div>`);
       hintN++;
-      const b = e.target.closest('[data-act]');
-      if (hintN >= hints.length) b.remove(); else b.textContent = `💡 Show hint (${hintN + 1}/${hints.length})`;
+      if (hintN >= hints.length) btn.remove(); else btn.textContent = t('showHint', hintN + 1, hints.length);
     }
     if (act === 'setup') {
       const r = await api('/reveal', { exerciseId: ex.id, what: 'setup' });
-      $('.setup-box', body).innerHTML = `<div class="md"><p class="muted">This runs before your code (in a fresh sandbox):</p><pre><code>${esc(r.setup)}</code></pre></div>`;
-      e.target.remove();
+      $('.setup-box', body).innerHTML = `<div class="md"><p class="muted">${esc(t('setupIntro'))}</p><pre><code>${esc(r.setup)}</code></pre></div>`;
+      btn.remove();
     }
     if (act === 'expected') {
-      out.innerHTML = '<p class="muted">Computing the expected output…</p>';
-      try { renderOutput(out, await api('/reveal', { exerciseId: ex.id, what: 'expected' }), 'Expected output (reference solution)'); }
+      out.innerHTML = `<p class="muted">${esc(t('computing'))}</p>`;
+      try { renderOutput(out, await api('/reveal', { exerciseId: ex.id, what: 'expected' }), t('expectedRef')); }
       catch (err) { out.innerHTML = `<div class="feedback fail">${esc(err.message)}</div>`; }
     }
     if (act === 'solution') {
       const p = state.progress.exercises[ex.id];
-      if (!(p && (p.attempts > 0 || p.passed)) && !confirm('Look at the solution without trying first? You learn more by attempting it (hints and the expected output can help).')) return;
+      if (!(p && (p.attempts > 0 || p.passed)) && !confirm(t('confirmSolution'))) return;
       const r = await api('/reveal', { exerciseId: ex.id, what: 'solution' });
-      const pp = state.progress.exercises[ex.id] || { attempts: 0 }; pp.revealed = true; state.progress.exercises[ex.id] = pp;
-      $('.solution-box', body).innerHTML = `<div class="card answer"><strong>Model solution</strong><pre style="white-space:pre-wrap;margin:8px 0"><code>${esc(r.solution)}</code></pre><button class="btn" data-act="copy">Copy into the editor</button>${r.explain ? `<div class="md">${md(r.explain)}</div>` : ''}</div>`;
-      $('.solution-box', body)._sol = r.solution;
+      const pp = state.progress.exercises[ex.id] || { attempts: 0 };
+      pp.revealed = true; state.progress.exercises[ex.id] = pp; saveProgress();
+      const box = $('.solution-box', body);
+      box.innerHTML = `<div class="card answer"><strong>${esc(t('modelSolution'))}</strong><pre style="white-space:pre-wrap;margin:8px 0"><code>${esc(r.solution)}</code></pre><button class="btn" data-act="copy">${esc(t('copyEditor'))}</button>${r.explain ? `<div class="md">${md(r.explain)}</div>` : ''}</div>`;
+      box._sol = r.solution;
       renderSidebar(ex.module, ex.id);
     }
     if (act === 'copy') { ta.value = $('.solution-box', body)._sol; autoGrow(ta); save(); ta.focus(); }
-    if (act === 'clear') { if (confirm('Replace the editor content with the starting code?')) { ta.value = ex.starter || ''; lsDel(draftKey(ex)); autoGrow(ta); } }
+    if (act === 'clear') { if (confirm(t('confirmRestore'))) { ta.value = ex.starter || ''; lsDel(draftKey(ex)); autoGrow(ta); } }
   });
   setTimeout(() => ta.focus(), 0);
 }
 
 function renderQuiz(ex, body, exam) {
-  const prev = exam ? state.exam.results[ex.id]?.choice : undefined;
-  body.innerHTML = `<div class="quiz-opts">${ex.options.map((o, i) => `<label class="quiz-opt"><input type="radio" name="q" value="${i}" ${prev === i ? 'checked' : ''}><span class="md">${md(o)}</span></label>`).join('')}</div>
-    <button class="btn primary" data-act="check">✓ Check</button><div class="feedback-box"></div>`;
+  body.innerHTML = `<div class="quiz-opts">${ex.options.map((o, i) => `<label class="quiz-opt"><input type="radio" name="q" value="${i}"><span class="md">${md(o)}</span></label>`).join('')}</div>
+    <button class="btn primary" data-act="check">${esc(t('check'))}</button><div class="feedback-box"></div>`;
   $('[data-act=check]', body).addEventListener('click', () => {
     const sel = $('input[name=q]:checked', body);
     if (!sel) return;
     const choice = Number(sel.value);
     const right = choice === ex.answer;
     $$('.quiz-opt', body).forEach((l, i) => { l.classList.remove('right', 'wrong'); if (i === ex.answer) l.classList.add('right'); else if (i === choice) l.classList.add('wrong'); });
-    $('.feedback-box', body).innerHTML = `<div class="feedback ${right ? 'pass' : 'fail'}"><strong>${right ? '✓ Correct!' : '✗ Not quite.'}</strong>${ex.explain ? `<div class="md">${md(ex.explain)}</div>` : ''}</div>`;
+    $('.feedback-box', body).innerHTML = `<div class="feedback ${right ? 'pass' : 'fail'}"><strong>${esc(right ? t('correct') : t('notQuite'))}</strong>${ex.explain ? `<div class="md">${md(ex.explain)}</div>` : ''}</div>`;
     if (!exam) {
-      if (state.progress.quiz[ex.id] !== true) { state.progress.quiz[ex.id] = right; api('/progress', { quiz: { [ex.id]: right } }); }
+      if (state.progress.quiz[ex.id] !== true) { state.progress.quiz[ex.id] = right; saveProgress(); }
       renderSidebar(ex.module, ex.id);
     }
   });
@@ -384,9 +430,9 @@ function renderQuiz(ex, body, exam) {
 
 function renderCard(ex, body, exam) {
   const key = (exam ? 'examcard:' : 'card:') + ex.id;
-  body.innerHTML = `<div class="card editor-wrap"><div class="editor-bar"><span class="lbl">Your answer (for yourself – write it as you would in the ZH)</span></div>
-      <textarea class="editor" style="font-family:var(--sans);white-space:pre-wrap;min-height:120px" placeholder="Type your answer…"></textarea></div>
-    ${exam ? '<p class="muted">You will compare your answer with the model answer and score yourself when you finish the exam.</p>' : '<button class="btn primary" data-act="reveal" style="margin-top:10px">Reveal the model answer</button><div class="ans"></div>'}`;
+  body.innerHTML = `<div class="card editor-wrap"><div class="editor-bar"><span class="lbl">${esc(t('yourAnswerCard'))}</span></div>
+      <textarea class="editor" style="font-family:var(--sans);min-height:120px" placeholder="${esc(t('typeAnswer'))}"></textarea></div>
+    ${exam ? `<p class="muted">${esc(t('examCardNote'))}</p>` : `<button class="btn primary" data-act="reveal" style="margin-top:10px">${esc(t('revealAnswer'))}</button><div class="ans"></div>`}`;
   const ta = $('textarea', body);
   ta.value = lsGet(key, '');
   ta.addEventListener('input', debounce(() => lsSet(key, ta.value), 300));
@@ -394,13 +440,13 @@ function renderCard(ex, body, exam) {
   if (rb) rb.addEventListener('click', () => {
     rb.remove();
     const ans = $('.ans', body);
-    ans.innerHTML = `<div class="card answer"><strong>Model answer</strong><div class="md">${md(ex.answerText)}</div></div>
-      <div class="rate"><span class="muted" style="align-self:center">How did you do?</span>
-        <button class="btn" data-r="0">✗ Didn't know it</button><button class="btn" data-r="1">◐ Partly</button><button class="btn ok" data-r="2">✓ Knew it</button></div>`;
+    ans.innerHTML = `<div class="card answer"><strong>${esc(t('modelAnswer'))}</strong><div class="md">${md(ex.answerText)}</div></div>
+      <div class="rate"><span class="muted" style="align-self:center">${esc(t('howDid'))}</span>
+        <button class="btn" data-r="0">${esc(t('didntKnow'))}</button><button class="btn" data-r="1">${esc(t('partly'))}</button><button class="btn ok" data-r="2">${esc(t('knewIt'))}</button></div>`;
     $$('[data-r]', ans).forEach((b) => b.addEventListener('click', () => {
       const v = Number(b.dataset.r);
-      state.progress.cards[ex.id] = v; api('/progress', { cards: { [ex.id]: v } });
-      $('.rate', ans).innerHTML = `<span class="muted">Saved. ${v === 2 ? 'Great!' : 'It will stay marked so you can come back to it.'}</span>`;
+      state.progress.cards[ex.id] = v; saveProgress();
+      $('.rate', ans).innerHTML = `<span class="muted">${esc(v === 2 ? t('savedGreat') : t('savedLater'))}</span>`;
       renderSidebar(ex.module, ex.id);
     }));
   });
@@ -416,14 +462,14 @@ function cellHtml(v) {
 function pgResultHtml(r) {
   const head = `<div class="stmt-head" title="${esc(r.sql)}">${esc((r.sql || '').replace(/\s+/g, ' ').slice(0, 140))}</div>`;
   const notes = (r.notes || []).map((n) => `<div class="note">${esc(n)}</div>`).join('');
-  if (r.error) return `<div class="stmt err">${head}<div class="stmt-body"><strong>ERROR:</strong> ${esc(r.error)}${r.hint ? `<br><em>Hint: ${esc(r.hint)}</em>` : ''}${r.detail ? `<br>${esc(r.detail)}` : ''}</div>${notes}</div>`;
+  if (r.error) return `<div class="stmt err">${head}<div class="stmt-body"><strong>ERROR:</strong> ${esc(r.error)}${r.hint ? `<br><em>${esc(t('hint'))}: ${esc(r.hint)}</em>` : ''}${r.detail ? `<br>${esc(r.detail)}` : ''}</div>${notes}</div>`;
   if (r.command === 'SKIPPED') return `<div class="stmt">${head}${notes}</div>`;
   if (r.fields) {
     const rows = r.rows || [];
     const table = `<div class="tbl-wrap"><table class="res"><thead><tr>${r.fields.map((f) => `<th>${esc(f)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map(cellHtml).join('')}</tr>`).join('')}</tbody></table></div>`;
-    return `<div class="stmt">${head}<div class="stmt-body">${table}<div class="rowcount">${r.rowCount ?? rows.length} row(s)${r.truncated ? ' – only the first 300 are shown' : ''}</div></div>${notes}</div>`;
+    return `<div class="stmt">${head}<div class="stmt-body">${table}<div class="rowcount">${esc(t('rows', r.rowCount ?? rows.length))}${r.truncated ? esc(t('truncated')) : ''}</div></div>${notes}</div>`;
   }
-  const msg = r.affected !== undefined ? `${r.command}: ${r.affected} row(s) affected` : `${r.command || 'OK'} – done`;
+  const msg = r.affected !== undefined ? t('affected', r.command, r.affected) : t('doneCmd', r.command || 'OK');
   return `<div class="stmt">${head}<div class="stmt-body">✓ ${esc(msg)}</div>${notes}</div>`;
 }
 function linesHtml(lines) {
@@ -433,25 +479,24 @@ function renderOutput(el, out, title) {
   if (!out) { el.innerHTML = ''; return; }
   let html = `<h3>${esc(title)}</h3>`;
   if (out.kind === 'pg') {
-    html += (out.results || []).map(pgResultHtml).join('') || '<p class="muted">(nothing ran)</p>';
-    if (out.check && (out.check.fields || out.check.error)) html += `<h3>State checked after your code</h3>${pgResultHtml({ ...out.check, sql: out.check.sql || 'check' })}`;
+    html += (out.results || []).map(pgResultHtml).join('') || `<p class="muted">${esc(t('nothingRan'))}</p>`;
+    if (out.check && (out.check.fields || out.check.error)) html += `<h3>${esc(t('stateChecked'))}</h3>${pgResultHtml({ ...out.check, sql: out.check.sql || 'check' })}`;
   } else {
-    html += linesHtml(out.lines) || '<p class="muted">(nothing ran)</p>';
-    if (out.check && out.check.length) html += `<h3>State checked after your code</h3>${linesHtml(out.check)}`;
+    html += linesHtml(out.lines) || `<p class="muted">${esc(t('nothingRan'))}</p>`;
+    if (out.check && out.check.length) html += `<h3>${esc(t('stateChecked'))}</h3>${linesHtml(out.check)}`;
   }
   el.innerHTML = html;
 }
 
 // ---------------------------------------------------------------- editor helpers
 function autoGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(Math.max(ta.scrollHeight + 4, 170), 640) + 'px'; }
-function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+function debounce(fn, ms) { let tm; return (...a) => { clearTimeout(tm); tm = setTimeout(() => fn(...a), ms); }; }
 function editorKeys(ta, run, check) {
   ta.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); (e.shiftKey ? check : run)(); return; }
     if (e.key === 'Tab' && !e.shiftKey) {
       e.preventDefault();
-      const s = ta.selectionStart, en = ta.selectionEnd;
-      ta.setRangeText('  ', s, en, 'end');
+      ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
       ta.dispatchEvent(new Event('input'));
     }
   });
@@ -466,17 +511,16 @@ const PLAY_SAMPLES = {
 function renderPlayground(engine) {
   if (!PLAY_SAMPLES[engine]) engine = 'pg';
   renderSidebar(null, null);
+  const info = { pg: t('playPg'), redis: t('playRedis'), mongo: t('playMongo') }[engine];
   const page = h(`<div class="page">
-    <div class="crumbs"><a href="#/">Home</a> › Playground</div>
-    <h1>Playground</h1>
-    <p class="muted">Experiment freely. Changes persist until you reset or restart the server.
-      ${engine === 'pg' ? 'HR tables are in schema <code>hr</code>; <code>DESC employees</code> shows a table\'s columns.' : ''}
-      ${engine === 'mongo' ? 'Databases: <code>feladatok</code> (Users), <code>aggregacio_gyak</code> (orders, customers, users, sessions), <code>bolt</code> (termekek).' : ''}</p>
+    <div class="crumbs"><a href="#/">${esc(t('home'))}</a> › ${esc(t('playground'))}</div>
+    <h1>${esc(t('playground'))}</h1>
+    <p class="muted">${esc(t('playIntro'))} ${info}</p>
     <div class="tabs"><a href="#/play/pg" class="${engine === 'pg' ? 'on' : ''}">SQL</a><a href="#/play/redis" class="${engine === 'redis' ? 'on' : ''}">Redis</a><a href="#/play/mongo" class="${engine === 'mongo' ? 'on' : ''}">MongoDB</a></div>
     <div class="card editor-wrap">
-      <div class="editor-bar"><button class="btn primary" data-act="run">▶ Run</button><span class="lbl"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span><span class="spacer"></span>
-        <button class="btn ghost" data-act="reset" title="Restore the original data">Reset database</button></div>
-      <textarea class="editor" spellcheck="false" placeholder="${esc(PLACEHOLDER[engine])}"></textarea>
+      <div class="editor-bar"><button class="btn primary" data-act="run">${esc(t('run'))}</button><span class="lbl"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span><span class="spacer"></span>
+        ${engine !== 'pg' ? `<button class="btn ghost" data-act="reset" title="${esc(t('resetTitle'))}">${esc(t('resetDb'))}</button>` : ''}</div>
+      <textarea class="editor" spellcheck="false" placeholder="${esc(t('placeholder')[engine])}"></textarea>
     </div>
     <div class="output"></div>
   </div>`);
@@ -486,17 +530,17 @@ function renderPlayground(engine) {
   ta.addEventListener('input', () => { autoGrow(ta); save(); });
   const out = $('.output', page);
   async function run() {
-    out.innerHTML = '<p class="muted">Running…</p>';
-    try { renderOutput(out, await api('/run', { engine, code: ta.value }), 'Output'); }
+    out.innerHTML = `<p class="muted">${esc(t('running'))}</p>`;
+    try { renderOutput(out, await api('/run', { engine, code: ta.value }), t('output')); }
     catch (e) { out.innerHTML = `<div class="feedback fail">${esc(e.message)}</div>`; }
   }
   editorKeys(ta, run, run);
   $('[data-act=run]', page).addEventListener('click', run);
-  $('[data-act=reset]', page).addEventListener('click', async () => {
-    if (!confirm('Reset the playground database to its original state?')) return;
-    out.innerHTML = '<p class="muted">Resetting…</p>';
+  $('[data-act=reset]', page)?.addEventListener('click', async () => {
+    if (!confirm(t('confirmReset'))) return;
+    out.innerHTML = `<p class="muted">${esc(t('resetting'))}</p>`;
     await api('/reset', { engine });
-    out.innerHTML = '<div class="feedback pass">The database has been reset.</div>';
+    out.innerHTML = `<div class="feedback pass">${esc(t('resetDone'))}</div>`;
   });
   mount(page);
   autoGrow(ta);
@@ -508,38 +552,40 @@ async function toggleSchema() {
   const d = $('#drawer');
   d.hidden = !d.hidden;
   if (d.hidden || state.schema) return;
-  $('#drawerBody').innerHTML = '<p class="muted">Loading…</p>';
+  $('#drawerBody').innerHTML = `<p class="muted">${esc(t('loading'))}</p>`;
   state.schema = await api('/schema');
-  const t = state.schema.tables;
+  renderSchema();
+}
+function renderSchema() {
+  if (!state.schema) return;
+  const tbls = state.schema.tables;
   const order = ['regions', 'countries', 'locations', 'departments', 'jobs', 'employees', 'job_history', 'employee_trainings', 'mandatory_trainings'];
-  const names = [...order.filter((n) => t[n]), ...Object.keys(t).filter((n) => !order.includes(n))];
-  let html = '<p class="muted">PostgreSQL schema <code>hr</code> (search_path is set, so no prefix is needed).</p>';
-  for (const n of names) html += `<h4>${esc(n)}</h4><div class="cols">${t[n].map(([c, ty]) => `<b>${esc(c)}</b> ${esc(ty)}`).join('<br>')}</div>`;
+  const names = [...order.filter((n) => tbls[n]), ...Object.keys(tbls).filter((n) => !order.includes(n))];
+  let html = `<p class="muted">${t('schemaIntro')}</p>`;
+  for (const n of names) html += `<h4>${esc(n)}</h4><div class="cols">${tbls[n].map(([c, ty]) => `<b>${esc(c)}</b> ${esc(ty)}`).join('<br>')}</div>`;
   html += '<h4 style="margin-top:22px">MongoDB</h4>';
   for (const [db, colls] of Object.entries(state.schema.mongo)) {
     html += `<div class="cols" style="margin-top:6px"><b>use ${esc(db)}</b></div>`;
-    for (const [c, info] of Object.entries(colls)) html += `<div class="cols">· <b>${esc(c)}</b> (${info.count}) – e.g. ${esc(JSON.stringify(info.sample).slice(0, 160))}</div>`;
+    for (const [c, inf] of Object.entries(colls)) html += `<div class="cols">· <b>${esc(c)}</b> (${inf.count}) – ${esc(t('eg'))} ${esc(JSON.stringify(inf.sample).slice(0, 160))}</div>`;
   }
   $('#drawerBody').innerHTML = html;
 }
 
 // ---------------------------------------------------------------- exam mode
-function loadExam() { return lsGet('adatb-exam', null); }
 function saveExam() { lsSet('adatb-exam', state.exam); }
-function examModule() { return state.modules.find((m) => m.exam); }
 function renderExamBox(box, m) {
   const ex = state.exam;
   if (ex && !ex.finished && ex.moduleId === m.id) {
-    box.innerHTML = `<div class="feedback info"><strong>The exam is running.</strong> Use the task list on the left. <button class="btn primary" id="finishBtn">Finish exam</button> <button class="btn ghost" id="abortBtn">Abort</button></div>`;
+    box.innerHTML = `<div class="feedback info"><strong>${esc(t('examRunning'))}</strong> ${esc(t('examUseList'))} <button class="btn primary" id="finishBtn">${esc(t('finishExam'))}</button> <button class="btn ghost" id="abortBtn">${esc(t('abort'))}</button></div>`;
     $('#finishBtn', box).addEventListener('click', finishExam);
-    $('#abortBtn', box).addEventListener('click', () => { if (confirm('Abort the exam? Nothing will be saved.')) { state.exam = null; lsDel('adatb-exam'); clearExamDrafts(); updateTimer(); route(); } });
+    $('#abortBtn', box).addEventListener('click', () => { if (confirm(t('confirmAbort'))) { state.exam = null; lsDel('adatb-exam'); clearExamDrafts(); updateTimer(); route(); } });
     return;
   }
   const exams = state.progress.exams || [];
-  box.innerHTML = `<div class="card prompt"><strong>Ready?</strong> ${m.exercises.length} tasks, ${m.exam.minutes} minutes.
-    ${exams.length ? `<div class="muted" style="margin-top:6px">Previous attempts: ${exams.slice(-5).map((e) => `${e.percent}% (${e.grade})`).join(', ')}</div>` : ''}
-    <div style="margin-top:10px"><button class="btn primary" id="startExam">▶ Start exam</button>
-    <span class="muted" style="font-size:13px;margin-left:8px">Outside the exam you can open the tasks in practice mode (with hints).</span></div></div>`;
+  box.innerHTML = `<div class="card prompt"><strong>${esc(t('ready'))}</strong> ${esc(t('examInfo', m.exercises.length, m.exam.minutes))}
+    ${exams.length ? `<div class="muted" style="margin-top:6px">${esc(t('prevAttempts'))} ${exams.slice(-5).map((e) => `${e.percent}% (${e.grade})`).join(', ')}</div>` : ''}
+    <div style="margin-top:10px"><button class="btn primary" id="startExam">${esc(t('startExam'))}</button>
+    <span class="muted" style="font-size:13px;margin-left:8px">${esc(t('practiceNote'))}</span></div></div>`;
   $('#startExam', box).addEventListener('click', () => {
     clearExamDrafts();
     state.exam = { moduleId: m.id, startedAt: Date.now(), endsAt: Date.now() + m.exam.minutes * 60000, results: {}, cardScores: {}, finished: false };
@@ -565,7 +611,7 @@ function updateTimer() {
 }
 function finishExam(timeUp) {
   if (!state.exam || state.exam.finished) return;
-  if (timeUp !== true && !confirm('Finish the exam and see your score?')) return;
+  if (timeUp !== true && !confirm(t('confirmFinish'))) return;
   state.exam.finished = true;
   state.exam.finishedAt = Date.now();
   saveExam(); updateTimer();
@@ -575,45 +621,44 @@ function finishExam(timeUp) {
 function gradeOf(p) { return p >= 87 ? 5 : p >= 75 ? 4 : p >= 63 ? 3 : p >= 50 ? 2 : 1; }
 function renderExamResult() {
   const ex = state.exam;
-  const m = ex ? state.modules.find((x) => x.id === ex.moduleId) : examModule();
+  const m = ex ? state.modules.find((x) => x.id === ex.moduleId) : state.modules.find((x) => x.exam);
   renderSidebar(m.id, null);
   if (!ex || !ex.finished) { location.hash = '#/m/' + m.id; return; }
-  const page = h(`<div class="page exam-summary"><div class="crumbs"><a href="#/">Home</a> › <a href="#/m/${m.id}">${esc(m.title)}</a> › Result</div>
-    <h1>Exam result</h1><div class="sum"></div><div class="cards-rate"></div></div>`);
+  const page = h(`<div class="page exam-summary"><div class="crumbs"><a href="#/">${esc(t('home'))}</a> › <a href="#/m/${m.id}">${esc(m.title)}</a> › ${esc(t('result'))}</div>
+    <h1>${esc(t('examResult'))}</h1><div class="sum"></div><div class="cards-rate"></div></div>`);
   function compute() {
     let got = 0, max = 0, auto = 0, autoMax = 0;
     const rows = m.exercises.map((e) => {
       max += e.points || 0;
       let pts = 0, note = '';
-      if (e.type === 'card') { const s = ex.cardScores[e.id]; pts = s === undefined ? 0 : s * e.points; note = s === undefined ? 'rate below' : 'self-rated'; }
-      else { const r = ex.results[e.id]; pts = r && r.pass ? e.points : 0; note = r ? (r.pass ? 'correct' : 'incorrect') : 'not attempted'; autoMax += e.points; auto += pts; }
+      if (e.type === 'card') { const s = ex.cardScores[e.id]; pts = s === undefined ? 0 : s * e.points; note = s === undefined ? t('st').rate : t('st').self; }
+      else { const r = ex.results[e.id]; pts = r && r.pass ? e.points : 0; note = r ? (r.pass ? t('st').correct : t('st').incorrect) : t('st').none; autoMax += e.points; auto += pts; }
       got += pts;
-      return `<tr><td>${esc(e.title)}</td><td>${note}</td><td style="text-align:right">${pts} / ${e.points}</td></tr>`;
+      return `<tr><td>${esc(e.title)}</td><td>${esc(note)}</td><td style="text-align:right">${pts} / ${e.points}</td></tr>`;
     });
     const pct = Math.round(100 * got / max);
     const mins = Math.round((ex.finishedAt - ex.startedAt) / 60000);
     $('.sum', page).innerHTML = `<div class="card prompt" style="display:flex;gap:28px;align-items:center;flex-wrap:wrap">
-        <div><div class="grade-big">${gradeOf(pct)}</div><div class="muted">grade</div></div>
-        <div><div class="grade-big">${pct}%</div><div class="muted">${got} / ${max} points</div></div>
-        <div class="muted">Practical (auto-graded): ${auto} / ${autoMax}<br>Time used: ${mins} min</div>
-        <div><button class="btn primary" id="saveRes">Save result</button> <a class="btn" href="#/m/${m.id}">Back</a></div></div>
-      <table><thead><tr><th>Task</th><th>Status</th><th style="text-align:right">Points</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
-    $('#saveRes', page).addEventListener('click', async () => {
-      const rec = { percent: pct, grade: gradeOf(pct), points: got, max, minutes: mins };
-      await api('/progress', { exam: rec });
-      state.progress.exams.push(rec);
+        <div><div class="grade-big">${gradeOf(pct)}</div><div class="muted">${esc(t('grade'))}</div></div>
+        <div><div class="grade-big">${pct}%</div><div class="muted">${esc(t('pointsOf', got, max))}</div></div>
+        <div class="muted">${esc(t('practical', auto, autoMax))}<br>${esc(t('timeUsed', mins))}</div>
+        <div><button class="btn primary" id="saveRes">${esc(t('saveResult'))}</button> <a class="btn" href="#/m/${m.id}">${esc(t('back'))}</a></div></div>
+      <table><thead><tr><th>${esc(t('task'))}</th><th>${esc(t('status'))}</th><th style="text-align:right">${esc(t('pointsCol'))}</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+    $('#saveRes', page).addEventListener('click', () => {
+      state.progress.exams.push({ percent: pct, grade: gradeOf(pct), points: got, max, minutes: mins, ts: new Date().toISOString() });
+      saveProgress();
       state.exam = null; lsDel('adatb-exam'); clearExamDrafts();
       location.hash = '#/m/' + m.id;
     });
   }
   const cr = $('.cards-rate', page);
   const cards = m.exercises.filter((e) => e.type === 'card');
-  cr.innerHTML = '<h2 style="margin-top:28px">Score your theory answers</h2>' + cards.map((e) => `
+  cr.innerHTML = `<h2 style="margin-top:28px">${esc(t('scoreTheory'))}</h2>` + cards.map((e) => `
     <div class="card prompt" data-id="${e.id}"><strong>${esc(e.title)} (${e.points} p)</strong>
       <div class="md">${md(e.prompt)}</div>
-      <div class="muted" style="margin-top:6px">Your answer:</div><pre style="white-space:pre-wrap;margin:4px 0">${esc(lsGet('examcard:' + e.id, '') || '(empty)')}</pre>
-      <div class="card answer"><strong>Model answer</strong><div class="md">${md(e.answerText)}</div></div>
-      <div class="rate"><button class="btn" data-s="0">0 points</button><button class="btn" data-s="0.5">half points</button><button class="btn" data-s="1">full points</button></div>
+      <div class="muted" style="margin-top:6px">${esc(t('yourAnswer'))}</div><pre style="white-space:pre-wrap;margin:4px 0">${esc(lsGet('examcard:' + e.id, '') || t('empty'))}</pre>
+      <div class="card answer"><strong>${esc(t('modelAnswer'))}</strong><div class="md">${md(e.answerText)}</div></div>
+      <div class="rate"><button class="btn" data-s="0">${esc(t('zeroPts'))}</button><button class="btn" data-s="0.5">${esc(t('halfPts'))}</button><button class="btn" data-s="1">${esc(t('fullPts'))}</button></div>
     </div>`).join('');
   $$('[data-s]', cr).forEach((b) => b.addEventListener('click', () => {
     const id = b.closest('[data-id]').dataset.id;
@@ -628,24 +673,37 @@ function renderExamResult() {
 }
 
 // ---------------------------------------------------------------- boot
+async function loadContent() {
+  const mods = await api('/modules');
+  state.modules = mods;
+  state.byId = new Map();
+  for (const m of mods) for (const e of m.exercises) state.byId.set(e.id, e);
+}
+async function setLang(lang) {
+  if (!window.I18N[lang] || lang === state.lang) return;
+  state.lang = lang; lsSet('lang', lang);
+  renderChrome();
+  await loadContent();
+  renderSchema();
+  route();
+}
 async function boot() {
   const theme = lsGet('theme');
   if (theme) document.documentElement.dataset.theme = theme;
+  renderChrome();
   $('#themeBtn').addEventListener('click', () => {
     const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
     document.documentElement.dataset.theme = dark ? 'light' : 'dark';
     lsSet('theme', document.documentElement.dataset.theme);
   });
+  $('#langSel').addEventListener('change', (e) => setLang(e.target.value));
   $('#schemaBtn').addEventListener('click', toggleSchema);
   $('#drawerClose').addEventListener('click', toggleSchema);
   $('#menuBtn').addEventListener('click', () => document.body.classList.toggle('menu-open'));
   try {
-    const [mods, prog] = await Promise.all([api('/modules'), api('/progress')]);
-    state.modules = mods;
-    state.progress = { exercises: {}, quiz: {}, cards: {}, exams: [], ...prog };
-    for (const m of mods) for (const e of m.exercises) state.byId.set(e.id, e);
+    await loadContent();
   } catch (e) {
-    $('#main').innerHTML = `<div class="page"><div class="feedback fail"><strong>Cannot reach the practice server.</strong> Start it with <code>npm start</code> in the db-learning-app folder, then reload.<pre>${esc(e.message)}</pre></div></div>`;
+    $('#main').innerHTML = `<div class="page"><div class="feedback fail"><strong>${esc(t('serverDown'))}</strong> ${t('serverDownHelp')}<pre>${esc(e.message)}</pre></div></div>`;
     return;
   }
   window.addEventListener('hashchange', route);

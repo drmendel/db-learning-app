@@ -1,7 +1,7 @@
 # How this works
 
 You learn every topic **by doing it**: each module starts with a short lesson, then a series of tasks.
-Everything runs locally on your machine, so nothing is sent anywhere and nothing costs tokens.
+Everything runs on the app's own server, with no external services.
 
 | Engine | What runs behind it |
 |---|---|
@@ -19,6 +19,8 @@ Everything runs locally on your machine, so nothing is sent anywhere and nothing
 
 Every check runs in a sandbox that is thrown away afterwards (SQL: a rolled-back transaction; Redis/Mongo: a fresh
 in-memory database). You can't break anything. Use the **Playground** tab to experiment freely.
+
+Your progress is stored **in this browser** (localStorage); on another computer or browser you start fresh.
 
 ## How SQL answers are compared
 

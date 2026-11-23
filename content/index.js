@@ -68,3 +68,54 @@ for (const m of modules) {
     exerciseById.set(e.id, e);
   }
 }
+
+// ---------------------------------------------------------------- translations
+// content/i18n/<lang>/<moduleId>.js  : texts for that module's exercises (English is the fallback)
+// content/lessons/<lang>/<file>.md   : the translated lesson
+export const LANGUAGES = ['en', 'hu'];
+const TEXT_FIELDS = ['title', 'prompt', 'hints', 'options', 'explain', 'answerText', 'checkMsg'];
+
+export const overlays = {};
+for (const lang of LANGUAGES.filter((l) => l !== 'en')) {
+  overlays[lang] = {};
+  const dir = path.join(__dirname, 'i18n', lang);
+  if (!fs.existsSync(dir)) continue;
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.js'))) {
+    overlays[lang][path.basename(f, '.js')] = (await import(path.join(dir, f))).default;
+  }
+}
+
+function localizeExercise(e, ov) {
+  if (!ov) return e;
+  const out = { ...e };
+  for (const k of TEXT_FIELDS) if (ov[k] !== undefined) out[k] = ov[k];
+  // require/forbid: translated messages in the same order as the [regex, message] pairs
+  for (const k of ['require', 'forbid']) {
+    if (e[k] && ov[k]) out[k] = e[k].map(([re, msg], i) => [re, ov[k][i] ?? msg]);
+  }
+  return out;
+}
+
+function localizeModule(m, lang) {
+  const ov = overlays[lang]?.[m.id];
+  const lessonFile = m.lesson && path.join(__dirname, 'lessons', lang, m.lesson);
+  return {
+    ...m,
+    title: ov?.title ?? m.title,
+    lab: ov?.lab ?? m.lab,
+    lessonText: lessonFile && fs.existsSync(lessonFile) ? fs.readFileSync(lessonFile, 'utf8') : m.lessonText,
+    exercises: m.exercises.map((e) => localizeExercise(e, ov?.exercises?.[e.id])),
+  };
+}
+
+const cache = { en: { modules, byId: exerciseById } };
+export function contentFor(lang) {
+  if (!LANGUAGES.includes(lang)) lang = 'en';
+  if (!cache[lang]) {
+    const mods = modules.map((m) => localizeModule(m, lang));
+    const byId = new Map();
+    for (const m of mods) for (const e of m.exercises) byId.set(e.id, e);
+    cache[lang] = { modules: mods, byId };
+  }
+  return cache[lang];
+}

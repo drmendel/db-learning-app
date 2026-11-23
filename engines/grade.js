@@ -3,6 +3,7 @@
 import { RedisEmulator, runScript, replyValue, formatReply } from './redis.js';
 import { MongoServer, toComparable, show } from './mongo.js';
 import { splitSql, stripComments } from './pg.js';
+import { tr } from './messages.js';
 
 // ---------------------------------------------------------------- normalising
 function normCell(v) {
@@ -96,12 +97,8 @@ function matchColumns(ref, stu, ordered) {
   return stu.map((r) => perm.map((d) => r[d]));
 }
 
-function tableSnippet(fields, rows, max = 5) {
-  return { fields, rows: rows.slice(0, max).map((r) => r.map(pretty)), more: Math.max(0, rows.length - max) };
-}
-
 // Compare two result sets: {fields, rows}
-export function compareResults(ref, stu, { ordered = false } = {}) {
+export function compareResults(ref, stu, { ordered = false, T = tr('en'), unit = 'rows' } = {}) {
   const refRows = (ref.rows || []).map((r) => r.map(normCell));
   let stuRows = (stu.rows || []).map((r) => r.map(normCell));
   const refCols = ref.fields || [];
@@ -109,8 +106,8 @@ export function compareResults(ref, stu, { ordered = false } = {}) {
   if (refCols.length !== stuCols.length) {
     return {
       ok: false,
-      message: `Expected ${refCols.length} column(s), your query returned ${stuCols.length}.`,
-      detail: `Expected columns (names may differ): ${refCols.join(', ')}\nYour columns: ${stuCols.join(', ')}`,
+      message: T('colsDiffer', refCols.length, stuCols.length, unit),
+      detail: T('colsDetail', refCols.join(', '), stuCols.join(', ')),
     };
   }
   if (refRows.length !== stuRows.length) {
@@ -119,17 +116,17 @@ export function compareResults(ref, stu, { ordered = false } = {}) {
     const missing = refRows.filter((r) => !stuSet.has(rowKey(r)));
     const extra = stuRows.filter((r) => !refSet.has(rowKey(r)));
     let detail = '';
-    if (missing.length && missing.length < refRows.length) detail += `Some rows you are missing:\n${missing.slice(0, 3).map((r) => '  ' + r.map(pretty).join(' | ')).join('\n')}\n`;
-    if (extra.length && extra.length < stuRows.length) detail += `Some rows that should not be there:\n${extra.slice(0, 3).map((r) => '  ' + r.map(pretty).join(' | ')).join('\n')}\n`;
-    if (stuRows.length > refRows.length && !extra.length) detail += 'You return duplicate rows – maybe DISTINCT, a missing join condition, or a GROUP BY is needed?\n';
-    return { ok: false, message: `Expected ${refRows.length} row(s), your query returned ${stuRows.length}.`, detail: detail.trim() };
+    if (missing.length && missing.length < refRows.length) detail += `${T('missingRows')}\n${missing.slice(0, 3).map((r) => '  ' + r.map(pretty).join(' | ')).join('\n')}\n`;
+    if (extra.length && extra.length < stuRows.length) detail += `${T('extraRows')}\n${extra.slice(0, 3).map((r) => '  ' + r.map(pretty).join(' | ')).join('\n')}\n`;
+    if (stuRows.length > refRows.length && !extra.length) detail += T('duplicates') + '\n';
+    return { ok: false, message: T('rowsDiffer', refRows.length, stuRows.length, unit), detail: detail.trim() };
   }
   // multiset comparison (allowing reordered columns)
   const sameMultiset = (a, b) => JSON.stringify(a.map(rowKey).sort()) === JSON.stringify(b.map(rowKey).sort());
   let colNote = '';
   if (!sameMultiset(refRows, stuRows)) {
     const re = matchColumns(refRows, stuRows, false);
-    if (re && sameMultiset(refRows, re)) { stuRows = re; colNote = ' (your columns are in a different order – that is fine here)'; }
+    if (re && sameMultiset(refRows, re)) { stuRows = re; colNote = T('colOrderNote'); }
     else {
       const stuKeys = new Set(stuRows.map(rowKey));
       const bad = refRows.find((r) => !stuKeys.has(rowKey(r)));
@@ -137,8 +134,8 @@ export function compareResults(ref, stu, { ordered = false } = {}) {
       const badStu = stuRows.find((r) => !refKeys.has(rowKey(r)));
       return {
         ok: false,
-        message: 'The number of rows is right, but some values differ.',
-        detail: `For example, this expected row is missing:\n  ${bad ? bad.map(pretty).join(' | ') : '?'}\nand you have this row instead:\n  ${badStu ? badStu.map(pretty).join(' | ') : '?'}\n(Numbers are compared rounded to 2 decimals; check rounding, NULL handling, filters and the column order of the SELECT list.)`,
+        message: T('valuesDiffer'),
+        detail: T('valuesDetail', bad ? bad.map(pretty).join(' | ') : '?', badStu ? badStu.map(pretty).join(' | ') : '?'),
       };
     }
   } else if (ordered && rowKey(refRows) !== rowKey(stuRows)) {
@@ -151,10 +148,10 @@ export function compareResults(ref, stu, { ordered = false } = {}) {
     const proj = (rows) => rows.map((r) => keys.map((k) => r[k]));
     const okOrder = keys.length ? rowKey(proj(refRows)) === rowKey(proj(stuRows)) : true;
     if (!okOrder) {
-      return { ok: false, message: 'Right rows, wrong order – check your ORDER BY (direction ASC/DESC and the sort keys).', detail: '' };
+      return { ok: false, message: T('wrongOrder'), detail: '' };
     }
   }
-  return { ok: true, message: 'Correct!' + colNote };
+  return { ok: true, message: T('correct') + colNote };
 }
 
 // Is there an ORDER BY at the top level of the last statement?
@@ -168,16 +165,16 @@ export function hasTopLevelOrderBy(sql) {
 
 // Behaviour checks (content/util.js behaviour()) return rows of (test, result)
 function isBehaviour(r) { return r && Array.isArray(r.fields) && r.fields.join(',') === 'test,result'; }
-function behaviourDiff(ref, stu) {
-  if (!stu || stu.error || !stu.rows) return { ok: false, detail: `The tests could not run: ${stu && stu.error ? stu.error : 'unknown error'}` };
+function behaviourDiff(ref, stu, T) {
+  if (!stu || stu.error || !stu.rows) return { ok: false, detail: T('testsCouldNotRun', stu && stu.error ? stu.error : T('unknownError')) };
   const got = new Map(stu.rows.map(([t, r]) => [t, r]));
   let ok = true;
   const lines = ref.rows.map(([t, want]) => {
     const have = got.get(t);
     const pass = have === want;
     if (!pass) ok = false;
-    const why = pass ? '' : want === 'error' ? '  ← your table/data allowed it, but it should be rejected' : '  ← this should work, but it raised an error';
-    return `${pass ? '✓' : '✗'} ${t}${why}`;
+    const why = pass ? '' : want === 'error' ? T('shouldReject') : T('shouldWork');
+    return `${pass ? '✓' : '✗'} ${T('testName', t)}${why}`;
   });
   return { ok, detail: lines.join('\n') };
 }
@@ -209,31 +206,31 @@ async function pgReference(ex, pg) {
   return ref;
 }
 
-async function gradePg(ex, code, pg) {
+async function gradePg(ex, code, pg, T) {
   const ref = await pgReference(ex, pg);
   const stu = await pg.sandbox({ setup: ex.setup, code, check: ex.check });
   const output = { kind: 'pg', results: stu.results, check: stu.check };
-  if (stu.setupError) return { pass: false, message: 'Internal setup error: ' + stu.setupError, output };
-  if (stu.error) return { pass: false, message: 'Your SQL raised an error:', detail: stu.error, output };
-  if (!stu.results.length) return { pass: false, message: 'Write some SQL first.', output };
+  if (stu.setupError) return { pass: false, message: T('setupError', stu.setupError), output };
+  if (stu.error) return { pass: false, message: T('sqlError'), detail: stu.error, output };
+  if (!stu.results.length) return { pass: false, message: T('writeSql'), output };
   const pat = checkPatterns(ex, code);
   if (pat) return { pass: false, message: pat, output };
   if (ex.check && isBehaviour(ref.check)) {
-    const b = behaviourDiff(ref.check, stu.check);
-    if (!b.ok) return { pass: false, message: 'Some of the behaviour tests failed:', detail: b.detail, output };
+    const b = behaviourDiff(ref.check, stu.check, T);
+    if (!b.ok) return { pass: false, message: T('behaviourFailed'), detail: b.detail, output };
   } else if (ex.check) {
-    const c = compareResults(ref.check, stu.check || {}, { ordered: ex.checkOrdered ?? hasTopLevelOrderBy(ex.check) });
-    if (!c.ok) return { pass: false, message: (ex.checkMsg ? ex.checkMsg + ' ' : '') + 'The resulting state is not what was asked: ' + c.message, detail: c.detail, output };
+    const c = compareResults(ref.check, stu.check || {}, { ordered: ex.checkOrdered ?? hasTopLevelOrderBy(ex.check), T });
+    if (!c.ok) return { pass: false, message: (ex.checkMsg ? ex.checkMsg + ' ' : '') + T('stateWrong', c.message), detail: c.detail, output };
   }
   if (!ex.check || ex.alsoResult) {
     const r = lastResultSet(ref);
     const s = lastResultSet(stu);
-    if (!s) return { pass: false, message: 'Your code did not return a result set – this task expects a SELECT.', output };
-    const c = compareResults(r, s, { ordered: ex.ordered ?? hasTopLevelOrderBy(ex.solution) });
+    if (!s) return { pass: false, message: T('noResultSet'), output };
+    const c = compareResults(r, s, { ordered: ex.ordered ?? hasTopLevelOrderBy(ex.solution), T });
     if (!c.ok) return { pass: false, message: c.message, detail: c.detail, output };
     return { pass: true, message: c.message, output };
   }
-  return { pass: true, message: 'Correct!', output };
+  return { pass: true, message: T('correct'), output };
 }
 
 export async function expectedPg(ex, pg) {
@@ -251,15 +248,15 @@ function redisRun(ex, code) {
 }
 const redisOut = (lines) => lines.map((l) => ({ cmd: l.cmd, text: formatReply(l.reply), error: l.reply?.type === 'error' }));
 
-function gradeRedis(ex, code) {
+function gradeRedis(ex, code, T) {
   const ref = redisRun(ex, ex.solution);
   const refErr = ref.main.find((l) => l.reply?.type === 'error');
   if (refErr) throw new Error(`Reference solution of ${ex.id} failed: ${refErr.reply.value}`);
   const stu = redisRun(ex, code);
   const output = { kind: 'redis', lines: redisOut(stu.main), check: redisOut(stu.check) };
-  if (!stu.main.length) return { pass: false, message: 'Type at least one Redis command.', output };
+  if (!stu.main.length) return { pass: false, message: T('typeRedis'), output };
   const err = stu.main.find((l) => l.reply?.type === 'error');
-  if (err && !ex.allowErrors) return { pass: false, message: `Line ${err.line} returned an error:`, detail: `${err.cmd}\n${formatReply(err.reply)}`, output };
+  if (err && !ex.allowErrors) return { pass: false, message: T('lineError', err.line), detail: `${err.cmd}\n${formatReply(err.reply)}`, output };
   const pat = checkPatterns(ex, code);
   if (pat) return { pass: false, message: pat, output };
   if (ex.check) {
@@ -268,8 +265,8 @@ function gradeRedis(ex, code) {
       const b = JSON.stringify(replyValue(stu.check[i]?.reply, stu.check[i]?.name));
       if (a !== b) {
         return {
-          pass: false, message: 'The data in Redis is not what was asked.',
-          detail: `Checked with: ${ref.check[i].cmd}\nExpected:\n${formatReply(ref.check[i].reply)}\nYours:\n${formatReply(stu.check[i]?.reply)}`,
+          pass: false, message: T('redisData'),
+          detail: T('checkedWith', ref.check[i].cmd, formatReply(ref.check[i].reply), formatReply(stu.check[i]?.reply)),
           output,
         };
       }
@@ -281,10 +278,10 @@ function gradeRedis(ex, code) {
     const a = JSON.stringify(replyValue(rl.reply, rl.name));
     const b = JSON.stringify(replyValue(sl.reply, sl.name));
     if (a !== b) {
-      return { pass: false, message: 'The reply of your last command is not the expected one.', detail: `Expected:\n${formatReply(rl.reply)}\nYours:\n${formatReply(sl.reply)}`, output };
+      return { pass: false, message: T('lastReply'), detail: T('expectedYours', formatReply(rl.reply), formatReply(sl.reply)), output };
     }
   }
-  return { pass: true, message: 'Correct!', output };
+  return { pass: true, message: T('correct'), output };
 }
 function expectedRedis(ex) {
   const ref = redisRun(ex, ex.solution);
@@ -316,10 +313,10 @@ function docsToRows(v) {
   const cell = (v) => (typeof v === 'string' ? JSON.stringify(v) : v);
   return { fields: keys, rows: v.map((d) => (d && typeof d === 'object' && !Array.isArray(d) ? keys.map((k) => (d[k] === undefined ? '(missing)' : cell(d[k]))) : [cell(d)])) };
 }
-function compareMongo(refVal, stuVal, ordered, lenientNames = false) {
+function compareMongo(refVal, stuVal, ordered, lenientNames, T) {
   const a = toComparable(refVal), b = toComparable(stuVal);
   if (Array.isArray(a) && Array.isArray(b) && a.every((x) => x && typeof x === 'object' && !Array.isArray(x))) {
-    if (!b.every((x) => x && typeof x === 'object' && !Array.isArray(x))) return { ok: false, message: 'Expected a list of documents.' };
+    if (!b.every((x) => x && typeof x === 'object' && !Array.isArray(x))) return { ok: false, message: T('expectedDocs') };
     let ra = docsToRows(a), rb = docsToRows(b);
     if (lenientNames) {
       // field names are free: compare values only (column order is matched by the comparator)
@@ -330,65 +327,65 @@ function compareMongo(refVal, stuVal, ordered, lenientNames = false) {
       const missing = ra.fields.filter((f) => !rb.fields.includes(f));
       const extra = rb.fields.filter((f) => !ra.fields.includes(f));
       return {
-        ok: false, message: 'The documents do not have the expected fields.',
-        detail: [missing.length ? `Missing field(s): ${missing.join(', ')}` : '', extra.length ? `Unexpected field(s): ${extra.join(', ')} (check your projection – e.g. _id:0)` : ''].filter(Boolean).join('\n'),
+        ok: false, message: T('fieldsDiffer'),
+        detail: [missing.length ? T('missingFields', missing.join(', ')) : '', extra.length ? T('unexpectedFields', extra.join(', ')) : ''].filter(Boolean).join('\n'),
       };
     }
-    const c = compareResults(ra, rb, { ordered });
-    return c.ok ? c : { ...c, message: c.message.replace('column(s)', 'field(s)').replace('row(s)', 'document(s)').replace('your query', 'you') };
+    return compareResults(ra, rb, { ordered, T, unit: 'docs' });
   }
   const sa = JSON.stringify(a), sb = JSON.stringify(b);
   if (ordered === false && Array.isArray(a) && Array.isArray(b)) {
-    if (JSON.stringify(a.map((x) => JSON.stringify(x)).sort()) === JSON.stringify(b.map((x) => JSON.stringify(x)).sort())) return { ok: true, message: 'Correct!' };
+    if (JSON.stringify(a.map((x) => JSON.stringify(x)).sort()) === JSON.stringify(b.map((x) => JSON.stringify(x)).sort())) return { ok: true, message: T('correct') };
   }
-  if (sa === sb) return { ok: true, message: 'Correct!' };
-  return { ok: false, message: 'The result is not the expected one.', detail: `Expected:\n${show(refVal)}\nYours:\n${show(stuVal)}` };
+  if (sa === sb) return { ok: true, message: T('correct') };
+  return { ok: false, message: T('resultDiffer'), detail: T('expectedYours', show(refVal), show(stuVal)) };
 }
 function mongoOrdered(code) { return /\.sort\s*\(|\$sort\b/.test(code); }
 
-function gradeMongo(ex, code, datasets) {
+function gradeMongo(ex, code, datasets, T) {
   const ref = mongoRun(ex, ex.solution, datasets);
   if (ref.main.error) throw new Error(`Reference solution of ${ex.id} failed: ${ref.main.error}`);
   const stu = mongoRun(ex, code, datasets);
   const output = { kind: 'mongo', lines: mongoOut(stu.main), check: mongoOut(stu.check) };
-  if (stu.main.error) return { pass: false, message: 'Your code raised an error:', detail: stu.main.error, output };
-  if (!stu.main.outputs.length) return { pass: false, message: 'Write some mongosh code first.', output };
+  if (stu.main.error) return { pass: false, message: T('mongoError'), detail: stu.main.error, output };
+  if (!stu.main.outputs.length) return { pass: false, message: T('writeMongo'), output };
   const pat = checkPatterns(ex, code);
   if (pat) return { pass: false, message: pat, output };
   if (ex.check) {
-    if (stu.check.error) return { pass: false, message: 'Checking your data failed: ' + stu.check.error, output };
-    const c = compareMongo(ref.check.last, stu.check.last, ex.checkOrdered ?? mongoOrdered(ex.check));
-    if (!c.ok) return { pass: false, message: 'The data in the collection is not what was asked. ' + c.message, detail: c.detail, output };
+    if (stu.check.error) return { pass: false, message: T('checkFailed', stu.check.error), output };
+    const c = compareMongo(ref.check.last, stu.check.last, ex.checkOrdered ?? mongoOrdered(ex.check), false, T);
+    if (!c.ok) return { pass: false, message: T('collState', c.message), detail: c.detail, output };
   }
   if (!ex.check || ex.alsoResult) {
-    if (!stu.main.hasLast) return { pass: false, message: 'Your code did not produce a result (the last statement should return something).', output };
-    const c = compareMongo(ref.main.last, stu.main.last, ex.ordered ?? mongoOrdered(ex.solution), ex.lenientNames);
+    if (!stu.main.hasLast) return { pass: false, message: T('noLast'), output };
+    const c = compareMongo(ref.main.last, stu.main.last, ex.ordered ?? mongoOrdered(ex.solution), !!ex.lenientNames, T);
     if (!c.ok) return { pass: false, message: c.message, detail: c.detail, output };
   }
-  return { pass: true, message: 'Correct!', output };
+  return { pass: true, message: T('correct'), output };
 }
-function expectedMongo(ex, datasets) {
+function expectedMongo(ex, datasets, T) {
   const ref = mongoRun(ex, ex.solution, datasets);
   const lines = [];
-  if (!ex.check || ex.alsoResult) lines.push({ cmd: '(result of the last statement)', text: show(ref.main.last) });
+  if (!ex.check || ex.alsoResult) lines.push({ cmd: T('lastStmt'), text: show(ref.main.last) });
   return { kind: 'mongo', lines, check: ex.check ? [{ cmd: ex.check, text: show(ref.check.last) }] : [] };
 }
 
 // ---------------------------------------------------------------- text (pattern) tasks
-function gradeText(ex, code) {
-  if (!code.trim()) return { pass: false, message: 'Write your answer first.' };
+function gradeText(ex, code, T) {
+  if (!code.trim()) return { pass: false, message: T('writeAnswer') };
   const pat = checkPatterns(ex, code);
   if (pat) return { pass: false, message: pat };
-  return { pass: true, message: 'Looks right! (checked by key elements – compare with the model solution)' };
+  return { pass: true, message: T('textOk') };
 }
 
 // ---------------------------------------------------------------- entry points
 export async function grade(ex, code, ctx) {
+  const T = tr(ctx.lang);
   switch (ex.type) {
-    case 'pg': return gradePg(ex, code, ctx.pg);
-    case 'redis': return gradeRedis(ex, code);
-    case 'mongo': return gradeMongo(ex, code, ctx.datasets);
-    case 'text': return gradeText(ex, code);
+    case 'pg': return gradePg(ex, code, ctx.pg, T);
+    case 'redis': return gradeRedis(ex, code, T);
+    case 'mongo': return gradeMongo(ex, code, ctx.datasets, T);
+    case 'text': return gradeText(ex, code, T);
     default: throw new Error('cannot grade type ' + ex.type);
   }
 }
@@ -397,7 +394,7 @@ export async function expected(ex, ctx) {
   switch (ex.type) {
     case 'pg': return expectedPg(ex, ctx.pg);
     case 'redis': return expectedRedis(ex);
-    case 'mongo': return expectedMongo(ex, ctx.datasets);
+    case 'mongo': return expectedMongo(ex, ctx.datasets, tr(ctx.lang));
     default: return null;
   }
 }

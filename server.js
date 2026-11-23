@@ -1,5 +1,10 @@
-// Adatbázis gyakorló – local interactive practice server.
+// db-learning-app – local interactive practice server.
 // Start:  npm start   →  http://localhost:8765
+//
+// The server is stateless: learning progress lives in each visitor's browser
+// (localStorage), so one instance can serve many people. Every exercise check
+// runs in a throw-away sandbox; playgrounds are per visitor (Redis/Mongo) or
+// rolled back after each run (SQL).
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -8,42 +13,57 @@ import { PgEngine } from './engines/pg.js';
 import { RedisEmulator, runScript, formatReply } from './engines/redis.js';
 import { MongoServer } from './engines/mongo.js';
 import { grade, expected, runInExercise } from './engines/grade.js';
-import { modules, exerciseById, datasets } from './content/index.js';
+import { translateNote, normLang } from './engines/messages.js';
+import { contentFor, datasets, LANGUAGES } from './content/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8765);
 const HOST = process.env.HOST || '127.0.0.1';
-const PROGRESS_FILE = path.join(__dirname, 'progress.json');
 const PUBLIC = path.join(__dirname, 'public');
 const MAX_ROWS = 300;
+const MAX_BODY = 200_000;          // bytes of code per request
+const MAX_CLIENTS = 500;           // playgrounds kept in memory
+const CLIENT_IDLE_MS = 2 * 3600e3; // drop idle playgrounds after 2 h
 
-// ------------------------------------------------------------------ state
 const pg = new PgEngine();
-let redisPlay = new RedisEmulator();
-let mongoPlay = newMongoPlayground();
+
+// ------------------------------------------------------------------ per-visitor playgrounds
+const clients = new Map(); // clientId -> { redis, mongo, seen }
 function newMongoPlayground() {
   const m = new MongoServer();
   for (const d of Object.values(datasets)) m.load(d);
   m.currentDb = 'feladatok';
   return m;
 }
-const ctx = { pg, datasets };
-
-function loadProgress() {
-  try { return JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8')); } catch { return { exercises: {}, quiz: {}, cards: {}, exams: [] }; }
+function clientState(id) {
+  const key = /^[\w-]{8,64}$/.test(id || '') ? id : 'anonymous';
+  let c = clients.get(key);
+  if (!c) {
+    if (clients.size >= MAX_CLIENTS) {
+      const oldest = [...clients.entries()].sort((a, b) => a[1].seen - b[1].seen)[0];
+      if (oldest) clients.delete(oldest[0]);
+    }
+    c = { redis: new RedisEmulator(), mongo: newMongoPlayground(), seen: Date.now() };
+    clients.set(key, c);
+  }
+  c.seen = Date.now();
+  return c;
 }
-let progress = loadProgress();
-let saveTimer = null;
-function saveProgress() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => fs.writeFile(PROGRESS_FILE, JSON.stringify(progress, null, 1), () => {}), 200);
-}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, c] of clients) if (now - c.seen > CLIENT_IDLE_MS) clients.delete(k);
+}, 10 * 60e3).unref();
 
 // ------------------------------------------------------------------ helpers
-function trimPg(out) {
-  if (!out) return out;
-  const trim = (r) => (r && r.rows ? { ...r, rowCount: r.rows.length, rows: r.rows.slice(0, MAX_ROWS), truncated: r.rows.length > MAX_ROWS } : r);
-  return { ...out, results: (out.results || []).map(trim), check: trim(out.check) };
+function localizeOutput(out, lang) {
+  if (!out || out.kind !== 'pg') return out;
+  const fix = (r) => {
+    if (!r) return r;
+    const t = r.rows ? { ...r, rowCount: r.rows.length, rows: r.rows.slice(0, MAX_ROWS), truncated: r.rows.length > MAX_ROWS } : { ...r };
+    if (t.notes) t.notes = t.notes.map((n) => translateNote(n, lang));
+    return t;
+  };
+  return { ...out, results: (out.results || []).map(fix), check: fix(out.check) };
 }
 function publicExercise(ex) {
   // never send solution/check/setup code to the browser up-front
@@ -51,106 +71,34 @@ function publicExercise(ex) {
   void solution; void check; void req; void forbid;
   return { ...rest, hasSetup: !!setup, hasCheck: !!check };
 }
-function publicModules() {
-  return modules.map((m) => ({ ...m, exercises: m.exercises.map(publicExercise) }));
-}
 function send(res, status, body, type = 'application/json; charset=utf-8') {
-  res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+  res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.end(type.startsWith('application/json') ? JSON.stringify(body) : body);
 }
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (c) => { data += c; if (data.length > 2e6) req.destroy(); });
+    req.on('data', (c) => { data += c; if (data.length > MAX_BODY) { reject(new Error('Request too large')); req.destroy(); } });
     req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
     req.on('error', reject);
   });
 }
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' };
 
-async function playground(engine, code) {
-  if (engine === 'pg') return trimPg({ kind: 'pg', ...(await pg.run(code)) });
+async function playground(engine, code, client) {
+  if (engine === 'pg') {
+    const r = await pg.sandbox({ code });
+    return { kind: 'pg', results: r.results, error: r.error, rolledBack: true };
+  }
   if (engine === 'redis') {
-    const lines = runScript(redisPlay, code).map((l) => ({ cmd: l.cmd, text: formatReply(l.reply), error: l.reply?.type === 'error' }));
+    const lines = runScript(client.redis, code).map((l) => ({ cmd: l.cmd, text: formatReply(l.reply), error: l.reply?.type === 'error' }));
     return { kind: 'redis', lines };
   }
   if (engine === 'mongo') {
-    const r = mongoPlay.execute(code);
-    return { kind: 'mongo', lines: r.outputs.map((o) => ({ cmd: o.stmt, text: o.text, error: !!o.error })), db: mongoPlay.currentDb };
+    const r = client.mongo.execute(code);
+    return { kind: 'mongo', lines: r.outputs.map((o) => ({ cmd: o.stmt, text: o.text, error: !!o.error })), db: client.mongo.currentDb };
   }
   throw new Error('unknown engine ' + engine);
-}
-
-function recordAttempt(id, code, result) {
-  const p = progress.exercises[id] || { attempts: 0 };
-  p.attempts += 1;
-  p.code = code;
-  p.last = result.pass ? 'pass' : 'fail';
-  if (result.pass) { p.passed = true; p.passedAt = p.passedAt || new Date().toISOString(); }
-  p.ts = new Date().toISOString();
-  progress.exercises[id] = p;
-  saveProgress();
-}
-
-// ------------------------------------------------------------------ routes
-async function api(req, res, url) {
-  const route = url.pathname.replace(/^\/api/, '');
-  if (req.method === 'GET' && route === '/modules') return send(res, 200, publicModules());
-  if (req.method === 'GET' && route === '/progress') return send(res, 200, progress);
-  if (req.method === 'GET' && route === '/schema') return send(res, 200, await schemaInfo());
-
-  const body = req.method === 'POST' ? await readBody(req) : {};
-
-  if (route === '/run') {
-    const { engine, code = '', exerciseId } = body;
-    if (exerciseId) {
-      const ex = exerciseById.get(exerciseId);
-      if (!ex) return send(res, 404, { error: 'unknown exercise' });
-      const out = await runInExercise(ex, code, ctx);
-      return send(res, 200, out.kind === 'pg' ? trimPg(out) : out);
-    }
-    return send(res, 200, await playground(engine, code));
-  }
-  if (route === '/check') {
-    const ex = exerciseById.get(body.exerciseId);
-    if (!ex) return send(res, 404, { error: 'unknown exercise' });
-    const result = await grade(ex, body.code || '', ctx);
-    if (result.output && result.output.kind === 'pg') result.output = trimPg(result.output);
-    if (!body.exam) recordAttempt(ex.id, body.code || '', result);
-    return send(res, 200, result);
-  }
-  if (route === '/reveal') {
-    const ex = exerciseById.get(body.exerciseId);
-    if (!ex) return send(res, 404, { error: 'unknown exercise' });
-    if (body.what === 'solution') {
-      const p = progress.exercises[ex.id] || { attempts: 0 };
-      p.revealed = true; progress.exercises[ex.id] = p; saveProgress();
-      return send(res, 200, { solution: ex.solution, explain: ex.explain || '' });
-    }
-    if (body.what === 'expected') {
-      const out = await expected(ex, ctx);
-      return send(res, 200, out && out.kind === 'pg' ? trimPg(out) : out);
-    }
-    if (body.what === 'setup') return send(res, 200, { setup: ex.setup || '', check: ex.check || '' });
-    return send(res, 400, { error: 'what?' });
-  }
-  if (route === '/progress') {
-    // partial updates: {quiz:{id:bool}, cards:{id:level}, draft:{id, code}, exam:{...}}
-    if (body.quiz) Object.assign(progress.quiz, body.quiz);
-    if (body.cards) Object.assign(progress.cards, body.cards);
-    if (body.draft) { const p = progress.exercises[body.draft.id] || { attempts: 0 }; p.code = body.draft.code; progress.exercises[body.draft.id] = p; }
-    if (body.exam) progress.exams.push({ ...body.exam, ts: new Date().toISOString() });
-    if (body.resetAll) progress = { exercises: {}, quiz: {}, cards: {}, exams: [] };
-    saveProgress();
-    return send(res, 200, { ok: true });
-  }
-  if (route === '/reset') {
-    if (body.engine === 'pg') await pg.reset();
-    if (body.engine === 'redis') redisPlay = new RedisEmulator();
-    if (body.engine === 'mongo') mongoPlay = newMongoPlayground();
-    return send(res, 200, { ok: true });
-  }
-  return send(res, 404, { error: 'not found' });
 }
 
 let schemaCache = null;
@@ -166,18 +114,63 @@ async function schemaInfo() {
     (tables[key] = tables[key] || []).push([c, ty]);
   }
   const mongo = {};
-  for (const [dsName, dbs] of Object.entries(datasets)) {
+  for (const dbs of Object.values(datasets)) {
     for (const [dbName, colls] of Object.entries(dbs)) {
       mongo[dbName] = Object.fromEntries(Object.entries(colls).map(([c, docs]) => [c, { count: docs.length, sample: docs[0] }]));
-      void dsName;
     }
   }
   schemaCache = { tables, mongo };
   return schemaCache;
 }
 
+// ------------------------------------------------------------------ routes
+async function api(req, res, url) {
+  const route = url.pathname.replace(/^\/api/, '');
+  const lang = normLang(url.searchParams.get('lang') || 'en');
+  const content = contentFor(lang);
+  const ctx = { pg, datasets, lang };
+
+  if (req.method === 'GET') {
+    if (route === '/health') return send(res, 200, { ok: true });
+    if (route === '/languages') return send(res, 200, LANGUAGES);
+    if (route === '/modules') return send(res, 200, content.modules.map((m) => ({ ...m, exercises: m.exercises.map(publicExercise) })));
+    if (route === '/schema') return send(res, 200, await schemaInfo());
+    return send(res, 404, { error: 'not found' });
+  }
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+
+  const body = await readBody(req);
+  const ex = body.exerciseId ? content.byId.get(body.exerciseId) : null;
+  if (body.exerciseId && !ex) return send(res, 404, { error: 'unknown exercise' });
+
+  if (route === '/run') {
+    const code = String(body.code || '');
+    if (ex) return send(res, 200, localizeOutput(await runInExercise(ex, code, ctx), lang));
+    const client = clientState(req.headers['x-client-id']);
+    return send(res, 200, localizeOutput(await playground(body.engine, code, client), lang));
+  }
+  if (route === '/check' && ex) {
+    const result = await grade(ex, String(body.code || ''), ctx);
+    result.output = localizeOutput(result.output, lang);
+    return send(res, 200, result);
+  }
+  if (route === '/reveal' && ex) {
+    if (body.what === 'solution') return send(res, 200, { solution: ex.solution, explain: ex.explain || '' });
+    if (body.what === 'expected') return send(res, 200, localizeOutput(await expected(ex, ctx), lang));
+    if (body.what === 'setup') return send(res, 200, { setup: ex.setup || '' });
+    return send(res, 400, { error: 'what?' });
+  }
+  if (route === '/reset') {
+    const c = clientState(req.headers['x-client-id']);
+    if (body.engine === 'redis') c.redis = new RedisEmulator();
+    if (body.engine === 'mongo') c.mongo = newMongoPlayground();
+    return send(res, 200, { ok: true });
+  }
+  return send(res, 404, { error: 'not found' });
+}
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     let file = path.normalize(path.join(PUBLIC, url.pathname === '/' ? 'index.html' : url.pathname));
@@ -186,13 +179,15 @@ const server = http.createServer(async (req, res) => {
     send(res, 200, fs.readFileSync(file), MIME[path.extname(file)] || 'application/octet-stream');
   } catch (e) {
     console.error(e);
-    send(res, 500, { error: String(e && e.message || e) });
+    send(res, 500, { error: String((e && e.message) || e) });
   }
 });
 
 console.log('Starting PostgreSQL (PGlite) and loading the HR schema…');
 await pg.init();
 server.listen(PORT, HOST, () => {
-  const n = modules.reduce((a, m) => a + m.exercises.length, 0);
-  console.log(`\n  Adatbázis gyakorló is running:  http://localhost:${PORT}\n  ${modules.length} modules, ${n} exercises · progress saved to progress.json\n  (Ctrl+C to stop)\n`);
+  const mods = contentFor('en').modules;
+  const n = mods.reduce((a, m) => a + m.exercises.length, 0);
+  console.log(`\n  db-learning-app is running:  http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}\n  ${mods.length} modules, ${n} exercises · languages: ${LANGUAGES.join(', ')}\n  (Ctrl+C to stop)\n`);
 });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server.close(); process.exit(0); });
