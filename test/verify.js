@@ -2,7 +2,10 @@
 // typical wrong answers must fail.   Run:  npm test
 import { PgEngine } from '../engines/pg.js';
 import { grade } from '../engines/grade.js';
-import { modules, exerciseById, datasets } from '../content/index.js';
+import fs from 'fs';
+import path from 'path';
+import { modules, exerciseById, datasets, overlays, LANGUAGES, contentFor } from '../content/index.js';
+import { TESTS_HU } from '../engines/messages.js';
 
 const pg = new PgEngine();
 await pg.init();
@@ -94,6 +97,46 @@ for (const [id, code, shouldPass] of cases) {
     if (r.pass === shouldPass) ok++;
     else fail(`${id}: expected ${shouldPass ? 'PASS' : 'FAIL'} but got ${r.pass ? 'PASS' : 'FAIL'} – ${r.message} ${r.detail || ''}\n      code: ${code.replace(/\n/g, ' ')}`);
   } catch (e) { fail(`${id}: threw ${e.message}`); }
+}
+
+// ---------------------------------------------------------------- translations
+console.log('\nTranslations:');
+for (const lang of LANGUAGES.filter((l) => l !== 'en')) {
+  const ov = overlays[lang];
+  for (const id of Object.keys(ov)) if (!modules.find((m) => m.id === id)) fail(`${lang}: overlay for unknown module ${id}`);
+  for (const m of modules) {
+    const mo = ov[m.id];
+    if (!mo) { fail(`${lang}: no overlay for module ${m.id}`); continue; }
+    if (!mo.title || !mo.lab) fail(`${lang}/${m.id}: module title/lab missing`);
+    if (m.lesson && !fs.existsSync(path.join('content', 'lessons', lang, m.lesson))) fail(`${lang}: lesson ${m.lesson} missing`);
+    for (const id of Object.keys(mo.exercises || {})) if (!exerciseById.has(id)) fail(`${lang}/${m.id}: unknown exercise ${id}`);
+    for (const ex of m.exercises) {
+      const o = (mo.exercises || {})[ex.id];
+      if (!o) { fail(`${lang}: ${ex.id} not translated`); continue; }
+      const probs = [];
+      if (!o.title) probs.push('title');
+      if (!o.prompt) probs.push('prompt');
+      for (const k of ['hints', 'options']) if (ex[k] && (!o[k] || o[k].length !== ex[k].length)) probs.push(`${k} (${o[k]?.length ?? 0}/${ex[k].length})`);
+      for (const k of ['require', 'forbid']) if (ex[k] && (!o[k] || o[k].length !== ex[k].length)) probs.push(`${k} messages (${o[k]?.length ?? 0}/${ex[k].length})`);
+      for (const k of ['explain', 'answerText', 'checkMsg']) if (ex[k] && !o[k]) probs.push(k);
+      if (probs.length) fail(`${lang}: ${ex.id} missing ${probs.join(', ')}`); else ok++;
+    }
+  }
+}
+// every behaviour-test name must have a Hungarian label
+for (const ex of exerciseById.values()) {
+  for (const m of String(ex.check || '').matchAll(/INSERT INTO _checks VALUES \(\d+, '((?:[^']|'')*)'/g)) {
+    const name = m[1].replace(/''/g, "'");
+    if (!TESTS_HU[name]) fail(`hu: behaviour test name not translated: "${name}" (${ex.id})`);
+  }
+}
+// grading in Hungarian returns Hungarian feedback
+{
+  const huEx = contentFor('hu').byId.get('sel-4');
+  const r = await grade(huEx, 'SELECT last_name FROM employees', { ...ctx, lang: 'hu' });
+  if (!r.pass && /oszlopot vártunk/.test(r.message)) ok++; else fail(`hu feedback not Hungarian: ${r.message}`);
+  const r2 = await grade(contentFor('hu').byId.get('sub-10'), 'SELECT 1', { ...ctx, lang: 'hu' });
+  if (/WITH-tel kezdődjön/.test(r2.message)) ok++; else fail(`hu require message not used: ${r2.message}`);
 }
 
 const total = modules.reduce((a, m) => a + m.exercises.length, 0);
