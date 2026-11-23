@@ -1,0 +1,72 @@
+export default {
+  title: 'Integráció (Python driverek)',
+  lab: 'Labor 10',
+  exercises: {
+    'i-1': {
+      title: 'TODO 1 – keresés PostgreSQL-ben',
+      prompt: 'Valósítsd meg a `search_postgres(keyword)` függvényt: kérdezd le a **kurzuslabor.courses** táblából azokat a kurzusokat, amelyek **címében szerepel a kulcsszó** (kis-nagybetűtől függetlenül), **cím szerint rendezve**, **legfeljebb 20** sort, **paraméterezett** lekérdezéssel. `{"id", "title", "teacher"}` szótárak listáját add vissza, és **zárd le** a kurzort és a kapcsolatot.\n\nElérhető: `pg_connect()` a config modulból.',
+      hints: ['`con = pg_connect(); cur = con.cursor()`', '`cur.execute("SELECT id, title, teacher FROM kurzuslabor.courses WHERE title ILIKE %s ORDER BY title LIMIT 20", ("%" + keyword + "%",))`', 'Használj try/finally-t, hogy a kapcsolat mindig lezáródjon.'],
+      require: [
+        'Kapcsolódj a pg_connect()-tel.',
+        'A kurzuslabor.courses táblát kérdezd le.',
+        'Kis-nagybetű független kereséshez ILIKE-ot használj.',
+        'Rendezz cím (title) szerint.',
+        'Legfeljebb 20 sort adj vissza (LIMIT 20).',
+        'Használj %s helyőrzőt – paraméterezett lekérdezést.',
+        'Zárd le a kurzort és a kapcsolatot.',
+      ],
+      forbid: [
+        'Ne f-stringgel tedd a kulcsszót az SQL-szövegbe – add át paraméterként (SQL injection!).',
+        'Ne fűzd hozzá a kulcsszót az SQL-szöveghez – add át paraméterként (SQL injection!).',
+        'Ne .format()-tal tedd a kulcsszót az SQL-be – add át paraméterként (SQL injection!).',
+      ],
+    },
+    'i-2': {
+      title: 'TODO 2 – Redis gyorsítótár',
+      prompt: 'Valósítsd meg a `search_with_cache(keyword)` függvényt a **cache-aside** mintával. Először keresd a `cache_key(keyword)` kulcsot a Redisben; **találat** esetén add vissza a tárolt listát és a `\'Redis\'` forrást. **Hiány** esetén hívd meg a `search_postgres`-t, tárold a JSON eredményt `TTL_SECONDS` lejárati idővel, és add vissza `\'PostgreSQL\'` forrással.\n\nElérhető: `redis_client()`, `cache_key()`, `TTL_SECONDS`, `json`.',
+      hints: ['`r = redis_client(); key = cache_key(keyword); cached = r.get(key)`', '`if cached is not None: return json.loads(cached), "Redis"`', '`r.setex(key, TTL_SECONDS, json.dumps(results, ensure_ascii=False))`'],
+      require: [
+        'A kulcsot a cache_key(keyword) adja.',
+        'A gyorsítótárat get()-tel kérdezd le.',
+        'A tárolt JSON-t json.loads-szal alakítsd vissza.',
+        'Hiány esetén a search_postgres()-szel kérdezd le a PostgreSQL-t.',
+        'Az eredményt setex(key, TTL_SECONDS, ...) hívással tárold.',
+        'Tárolás előtt json.dumps-szal alakítsd szöveggé.',
+        "Találat esetén a 'Redis' forrást add vissza.",
+        "Hiány esetén a 'PostgreSQL' forrást add vissza.",
+      ],
+    },
+    'i-3': {
+      title: 'TODO 3 – MongoDB napló',
+      prompt: 'Valósítsd meg a `log_search(keyword, count, source)` függvényt: szúrj be egy dokumentumot a `MONGO_DB` adatbázis **search_events** gyűjteményébe a **kulcsszóval**, a **találatok számával**, a **forrással**, az **időponttal** (UTC most) és a **labor azonosítójával** (`LAB_ID`). Utána zárd le a klienst.\n\nElérhető: `mongo_client()`, `MONGO_DB`, `LAB_ID`, `datetime`, `timezone`.',
+      hints: ['`client = mongo_client()`', '`client[MONGO_DB]["search_events"].insert_one({...})`', '`datetime.now(timezone.utc)`', 'try/finally: `client.close()`'],
+      require: [
+        'Kapcsolódj a mongo_client()-tel.',
+        'A MONGO_DB adatbázist használd.',
+        "A 'search_events' gyűjteménybe írj.",
+        'insert_one()-nal szúrd be.',
+        'A LAB_ID-t is tárold el.',
+        'Az időponthoz a datetime.now(timezone.utc)-t használd.',
+        'Zárd le a klienst.',
+      ],
+    },
+    'i-q1': {
+      title: 'Paraméterezett lekérdezések',
+      prompt: 'Miért jobb a `cur.execute("... WHERE title ILIKE %s", (pattern,))`, mint a `cur.execute(f"... WHERE title ILIKE \'{pattern}\'")`?',
+      options: ['Gyorsabb begépelni', 'A driver az értéket külön/escape-elve küldi, így egy `\'; DROP TABLE x; --` bemenet nem változtathatja meg az SQL-t (nincs SQL injection)', 'Az f-stringek nem működnek Python 3-ban', 'Az ILIKE csak %s-sel működik'],
+      explain: 'A kötött paraméterek elválasztják az adatot a kódtól. Oracle-ben ráadásul lehetővé teszik, hogy a shared pool újrahasznosítsa az elemzett utasítást (soft parse).',
+    },
+    'i-q2': {
+      title: 'Cache hit / miss',
+      prompt: 'Mi történik a cache-aside mintában **cache miss** esetén?',
+      options: ['A kérés hibát ad', 'Az adatot az adatbázisból olvassuk ki, lejárati idővel eltároljuk a gyorsítótárban, majd visszaadjuk', 'A gyorsítótár kiürül', 'A Redis magától lekérdezi a PostgreSQL-t'],
+      explain: 'A hiányt az alkalmazás kezeli: kiolvassa az elsődleges adatforrást, és feltölti a gyorsítótárat – általában lejárati idővel, hogy az elavult adat végül eltűnjön.',
+    },
+    'i-q3': {
+      title: 'A TTL kompromisszuma',
+      prompt: 'Mi a kockázata egy **nagyon hosszú TTL**-nek a gyorsítótárazott adaton?',
+      options: ['Nagyobb adatbázis-terhelés', 'Az olvasók még sokáig elavult adatot kaphatnak, miután a forrás megváltozott', 'A Redisnek elfogynak a kulcsai', 'Semmi'],
+      explain: 'Rövid TTL: nagyobb adatbázis-terhelés, de frissebb adat; hosszú TTL: kisebb terhelés, de több elavult adat. A kifejezett érvénytelenítés (DEL változáskor) megoldja az elavulást.',
+    },
+  },
+};

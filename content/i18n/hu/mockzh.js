@@ -1,0 +1,68 @@
+export default {
+  title: 'Minta ZH (100 perc)',
+  lab: 'Vizsga',
+  exercises: {
+    'zh-1a': { title: '1a) Oracle SQL – HR', prompt: 'Listázd a **legalább 8000 USD** fizetésű dolgozók **teljes nevét**, **részlegének nevét** és **fizetését**. Az eredményt **fizetés szerint csökkenően** rendezd!' },
+    'zh-1b': { title: '1b) Oracle SQL – HR', prompt: 'Listázd részlegenként a **részleg nevét**, a **dolgozók számát** és az **átlagfizetést egészre kerekítve**! Csak azok a részlegek jelenjenek meg, ahol **legalább 5 dolgozó** van és az **átlagfizetés meghaladja a 6000 USD-t**. Az eredményt az **átlagfizetés szerint csökkenően** rendezd!' },
+    'zh-1c': {
+      title: '1c) Oracle SQL – allekérdezés',
+      prompt: '**Allekérdezés** felhasználásával listázd azon dolgozók **teljes nevét**, **fizetését** és **részlegnevét**, akik **a saját részlegük átlagfizetésénél többet keresnek**! Az eredményt **fizetés szerint csökkenően** rendezd!',
+      require: ['A feladat allekérdezést kér.'],
+    },
+    'zh-2a': {
+      title: '2a) Terv utasítások',
+      prompt: 'Írd le azt a **két Oracle SQL-utasítást**, amellyel a\n\n`SELECT last_name, salary FROM employees WHERE employee_id = 106;`\n\nlekérdezés becsült végrehajtási tervét előállíthatod és megjelenítheted!',
+      require: ['1. utasítás: EXPLAIN PLAN FOR <lekérdezés>', '2. utasítás: SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY)'],
+    },
+    'zh-2b': {
+      title: '2b) A terv magyarázata',
+      prompt: 'A fenti lekérdezés terve:\n\n```text\n0 SELECT STATEMENT\n1  TABLE ACCESS BY INDEX ROWID  EMPLOYEES\n2   INDEX UNIQUE SCAN           EMP_EMP_ID_PK\n```\n\nMagyarázd el, mit csinál az **INDEX UNIQUE SCAN** és a **TABLE ACCESS BY INDEX ROWID** **ebben a konkrét tervben**!',
+      answerText: '**INDEX UNIQUE SCAN** (2. lépés, ez fut először): megkeresi a 106-os értéket az EMP_EMP_ID_PK egyedi elsődleges kulcs indexben. Mivel az index egyedi, legfeljebb egy bejegyzést, azaz egy ROWID-t ad vissza. **TABLE ACCESS BY INDEX ROWID** (1. lépés): ezzel a ROWID-vel (a sor fizikai címével) pontosan azt az egy sort olvassa be az EMPLOYEES táblából, hogy megkapja a last_name és salary értékét, amelyek nincsenek az indexben. Nincs szükség teljes táblaolvasásra.',
+    },
+    'zh-2c': { title: '2c) Függvény alapú index', prompt: 'Írj egy olyan indexlétrehozó utasítást (az index neve legyen `emp_upper_last_ix`), amely elősegítheti az `UPPER(last_name) = \'KING\'` feltételt használó lekérdezések gyorsítását!' },
+    'zh-3a': { title: '3a) PostgreSQL – tábla tömbbel', prompt: 'Hozz létre `kurzusok` nevű táblát a következőkkel: `kurzus_id` **automatikusan növekvő elsődleges kulcs**, `nev` **kötelező** szöveges mező, `cimkek` **szövegtömb**, amely **alapértelmezetten üres**, és **nem lehet NULL**!' },
+    'zh-3b': { title: '3b) PostgreSQL – beszúrás', prompt: '(Az üres `kurzusok` tábla létezik.) Szúrj be két kurzust: **„SQL alapok”** címkéi *sql, adatbazis*; **„PostgreSQL”** címkéi *sql, postgresql, json*. A `kurzus_id` értékét ne add meg!' },
+    'zh-3c': { title: '3c) PostgreSQL – tömbök lekérdezése', prompt: 'Kérdezd le az **sql** címkét tartalmazó kurzusok **nevét** és **címkéinek darabszámát** (`cimkek_szama` néven), **név szerint növekvően** rendezve!' },
+    'zh-3d': { title: '3d) PostgreSQL – tömb frissítése', prompt: 'Frissítsd az **„SQL alapok”** kurzust úgy, hogy a `cimkek` tömb **végére** bekerüljön a **gyakorlat** címke!' },
+    'zh-4a': { title: '4a) Redis – hash', prompt: 'A `diak:101` kulcs alatt **hash**-ként tárold el: **nev = Anna**, **pont = 40**.' },
+    'zh-4b': { title: '4b) Redis – növelés', prompt: '(A `diak:101` létezik.) Növeld meg a **pont** mezőjét **5**-tel úgy, hogy nem kérdezed le előtte az értékét!', require: ['Használd a HINCRBY-t.'] },
+    'zh-4c': { title: '4c) Redis – a hash lekérdezése', prompt: 'Kérdezd le a `diak:101` hash **összes mezőjét és értékét**!' },
+    'zh-4d': { title: '4d) Redis – rendezett halmaz', prompt: 'A `ranglista` nevű rendezett halmazba vedd fel **Anna (50)**, **Bela (40)**, **Csilla (70)** pontszámát!' },
+    'zh-4e': { title: '4e) Redis – top 2', prompt: 'Listázd a `ranglista` **két legmagasabb pontszámú** elemét **a pontszámokkal együtt**!' },
+    'zh-4f': { title: '4f) Redis – halmazok', prompt: 'Hozd létre az **sql = {Anna, Csilla}** és a **python = {Anna, Bela}** halmazokat, majd kérdezd le a **közös elemeket**!' },
+    'zh-5a': { title: '5a) MongoDB – beszúrás', prompt: 'Szúrj be a `termekek` gyűjteménybe egy dokumentumot ezekkel az adatokkal: **nev = „Adatbázisok könyv”**, **kategoria = „konyv”**, **ar = 8500**, **raktaron = true**, **cimkek = [„tanulas”, „sql”]**!' },
+    'zh-5b': { title: '5b) MongoDB – lekérdezés', prompt: 'Listázd a **raktáron lévő**, **legalább 10 000** értékű termékeket! Csak a **nev** és **ar** mezőt jelenítsd meg, az `_id`-t **ne**!' },
+    'zh-5c': { title: '5c) MongoDB – módosítás', prompt: 'A **konyv** kategóriájú termékeken állítsd az **akcios** mezőt **true** értékre (akkor is, ha ez a mező korábban nem létezett)!' },
+    'zh-5d': { title: '5d) MongoDB – aggregáció', prompt: '**Aggregációs pipeline**-nal a **raktáron lévő** termékeket csoportosítsd **kategóriánként**, és add vissza a **termékszámot**, valamint az **átlagárat**. Az **átlagár szerint csökkenően** rendezd az eredményt!' },
+    'zh-6': {
+      title: '6) Oracle architektúra',
+      prompt: 'Mi a különbség az Oracle **adatbázis** (database) és a **példány** (instance) között? Mit jelentenek az **SGA** és **PGA** rövidítések, és mire szolgálnak ezek a memóriaterületek?',
+      answerText: '**Adatbázis** = fizikai fájlok (adatfájlok, vezérlőfájlok, online redo log fájlok). **Példány** = memória (SGA + PGA-k) + háttérfolyamatok (DBWn, LGWR, CKPT, SMON, PMON…), amelyek megnyitják és kiszolgálják az adatbázist. **SGA** = System Global Area: közös memória: database buffer cache, shared pool (library cache az elemzett SQL-lel és tervekkel, szótár-gyorsítótár), redo log buffer. **PGA** = Program Global Area: egyetlen szerverfolyamat saját memóriája: rendezési/hash területek, munkamenet- és kurzoradatok.',
+    },
+    'zh-7': {
+      title: '7) SQL-végrehajtás és optimalizálás',
+      prompt: 'Röviden definiáld a végrehajtási tervben szereplő **cardinality** és **cost** fogalmakat! Mi a különbség a **TABLE ACCESS FULL** és az **INDEX RANGE SCAN** között?',
+      answerText: '**Kardinalitás** = egy lépés által visszaadott sorok becsült száma. **Költség** = az optimalizáló relatív becslése az erőforrásokra (I/O, CPU); a CBO a legkisebb költségű tervet választja. A **TABLE ACCESS FULL** a tábla összes blokkját beolvassa (többblokkos olvasás), akkor jó, ha sok sor kell, vagy nincs használható index. Az **INDEX RANGE SCAN** egy rendezett index összefüggő tartományát olvassa (pl. `<`, `>`, BETWEEN, nem egyedi `=`, `LIKE \'A%\'`), és ROWID-kat ad vissza, amit általában TABLE ACCESS BY INDEX ROWID követ. Szelektív feltételekhez jó.',
+    },
+    'zh-8': {
+      title: '8) NoSQL – alapfogalmak',
+      prompt: 'Nevezd meg és röviden értelmezd a Big Data **„3V”** jellemzőjét! Mit jelentenek a CAP-tétel **C, A és P** betűi?',
+      answerText: '**Volume** (hatalmas adatmennyiség), **Velocity** (a keletkezés/feldolgozás nagy sebessége), **Variety** (strukturált, félig és nem strukturált formátumok). **C**onsistency: minden olvasás a legutóbbi írást látja. **A**vailability: minden kérés nem hibás választ kap. **P**artition tolerance: hálózati partíció esetén is működik. Egyszerre csak kettő garantálható teljesen; a gyakorlatban CP vagy AP.',
+    },
+    'zh-9': {
+      title: '9) Tömb vagy kapcsolótábla?',
+      prompt: 'Mikor lehet célszerű egy PostgreSQL **tömbmező** használata, és mikor ajánlott inkább külön **kapcsolótábla**? Írj egy-egy rövid példát vagy indoklást!',
+      answerText: 'Tömb: néhány egyszerű érték, ami a sorhoz tartozik, együtt olvassuk, nem kell idegen kulcs, pl. kurzuscímkék `text[]`. Kapcsolótábla: ha az elemek entitások, vagy hivatkozási integritás kell, egyenként kérdezzük le/kapcsoljuk össze/frissítjük őket, saját attribútumuk van, vagy a lista nagy lehet, pl. hallgató–kurzus beiratkozás jeggyel.',
+    },
+    'zh-10': {
+      title: '10) Redis – adattípusok',
+      prompt: 'Az alábbi célokhoz melyik Redis adatstruktúrát választanád: (1) sorrendhelyes feladatlista, (2) duplikációmentes címkehalmaz, (3) pontszám szerinti ranglista, (4) egy diák több mezőből álló profilja?',
+      answerText: '(1) Lista, (2) Halmaz, (3) Rendezett halmaz, (4) Hash.',
+    },
+    'zh-11': {
+      title: '11) MongoDB – alapelvek',
+      prompt: 'Mi az **_id** mező szerepe? Mit jelent a **BSON**? Mi a különbség a **replika** (replica set) és a **sharding** között?',
+      answerText: '**_id**: a dokumentum kötelező, egyedi kulcsa a gyűjteményen belül, automatikusan indexelt, hiányában ObjectId generálódik. **BSON**: Binary JSON, a MongoDB bináris tárolási formátuma extra típusokkal (Date, ObjectId, …). **Replica set**: ugyanazon adatok másolatai több csomóponton (primary + secondary-k): magas rendelkezésre állás és automatikus átállás. **Sharding**: az adatok shard kulcs szerint fel vannak osztva a csomópontok között: horizontális skálázás.',
+    },
+  },
+};
